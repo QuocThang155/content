@@ -113,10 +113,10 @@ Các trường nội dung khi chỉnh sửa phải dài từ 7 đến 2.000 ký 
 | `ready` | Chưa giao cho AI |
 | `sent` | Đã sao chép prompt toàn truyện hoặc Part 2 |
 | `part1` | Đã sao chép prompt Part 1 |
-| `done` | Người dùng đánh dấu đã hoàn tất xử lý |
+| `done` | Trạng thái nghiệp vụ hoàn tất; thanh Workflow không dùng trạng thái này để ghi nhận output |
 
 Chỉ số **Đang xử lý** bằng số thẻ `sent` cộng số thẻ `part1`. Chỉ số **Đã
-ghi nhận** của từng lane bao gồm `sent`, `part1` và `done`; chỉ số **Hoàn tất**
+ghi nhận** của từng lane đếm trực tiếp các file output đã được Extension trả về trong workspace; chỉ số **Hoàn tất**
 chỉ bao gồm `done`.
 
 ## 4. Chức năng người dùng

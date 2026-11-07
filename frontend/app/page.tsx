@@ -612,11 +612,11 @@ export default function ThangMiaPage() {
                 const visible = visibleItems.filter(x => x.ai === ai);
                 const cursor = visible.length ? laneCursors[ai] % visible.length : 0;
                 const cardsToRender = laneViewAll[ai] ? visible : (visible[cursor] ? [visible[cursor]] : []);
-                const assigned = lane.length - lane.filter(x => x.status === 'ready').length;
+                const returned = workspaceStatus[ai]?.filter((entry) => entry.output_exists).length ?? 0;
                 const ready = lane.filter(x => x.status === 'ready').length;
                 return <section key={ai} className="ai-lane">
-                  <div className="lane-heading"><div className="lane-title-row"><div className={`ai-avatar avatar-${ai}`}><Sparkles size={19}/></div><div><h3>AI {ai}</h3><span>{assigned} / {lane.length} đã ghi nhận</span></div><div className="lane-count">{lane.length} THẺ</div></div>
-                    <div className="lane-progress"><div style={{width: `${lane.length ? assigned/lane.length*100 : 0}%`}}/></div>
+                  <div className="lane-heading"><div className="lane-title-row"><div className={`ai-avatar avatar-${ai}`}><Sparkles size={19}/></div><div><h3>AI {ai}</h3><span>{returned} / {lane.length} đã trả về</span></div><div className="lane-count">{lane.length} THẺ</div></div>
+                    <div className="lane-progress"><div style={{width: `${lane.length ? returned/lane.length*100 : 0}%`}}/></div>
                     <button type="button" className="button primary full" disabled={!ready || !!working} onClick={() => copyNext(ai)}><Clipboard size={16}/> Sao chép tiếp <ArrowRight size={17}/></button>
                     <button type="button" className="button secondary full" disabled={!!working} onClick={() => void exportLane(ai)}><FileText size={16}/> Xuất 14 TXT</button>
                     <div className="lane-navigation">
@@ -624,7 +624,9 @@ export default function ThangMiaPage() {
                       <button type="button" className="small-button" disabled={!visible.length} onClick={() => setLaneViewAll((current) => ({ ...current, [ai]: !current[ai] }))}>{laneViewAll[ai] ? 'Thu gọn' : `Xem toàn bộ (${visible.length})`}</button>
                     </div>
                   </div>
-                  <div className={`lane-cards ${laneViewAll[ai] ? 'show-all' : 'single-card'}`}>{cardsToRender.length ? cardsToRender.map((item) => <article className={`story-card ${item.status === 'done' ? 'story-done' : ''} ${laneViewAll[ai] ? 'selectable-card' : ''}`} key={item.uid}
+                  <div className={`lane-cards ${laneViewAll[ai] ? 'show-all' : 'single-card'}`}>{cardsToRender.length ? cardsToRender.map((item) => {
+                    const outputReturned = workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item))?.output_exists ?? false;
+                    return <article className={`story-card ${item.status === 'done' ? 'story-done' : ''} ${laneViewAll[ai] ? 'selectable-card' : ''}`} key={item.uid}
                     onClick={() => {
                       if (!laneViewAll[ai]) return;
                       const selectedIndex = visible.findIndex((visibleItem) => visibleItem.uid === item.uid);
@@ -646,13 +648,14 @@ export default function ThangMiaPage() {
                     <div className="story-card-actions" onClick={(event) => event.stopPropagation()}><button type="button" className="small-primary" disabled={!!working} onClick={() => void copyStory(item, 'full')}><Clipboard size={14}/> Sao chép</button>
                       <button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa / P1 / P2</button>
                       {item.status === 'sent' || item.status === 'part1' ? <button type="button" className="small-button copy-undo" title="Hoàn tác sao chép" aria-label="Hoàn tác sao chép" disabled={!!working} onClick={() => void undoCopied(item)}><RotateCcw size={14}/> Hoàn tác sao chép</button> : null}
-                      <button type="button" className={`small-square ${item.status === 'done' ? 'undo' : ''}`} title={item.status === 'done' ? 'Hoàn tác' : 'Đánh dấu hoàn tất'} aria-label={item.status === 'done' ? 'Hoàn tác' : 'Hoàn tất'} onClick={() => void toggleDone(item)}><Check size={16}/></button></div>
+                      <button type="button" className={`small-square ${outputReturned ? 'returned' : item.status === 'done' ? 'undo' : ''}`} title={outputReturned ? 'Extension đã trả về' : item.status === 'done' ? 'Hoàn tác trạng thái nghiệp vụ' : 'Đánh dấu hoàn tất nghiệp vụ'} aria-label={outputReturned ? 'Extension đã trả về' : item.status === 'done' ? 'Hoàn tác trạng thái nghiệp vụ' : 'Đánh dấu hoàn tất nghiệp vụ'} onClick={() => void toggleDone(item)}><Check size={16}/></button></div>
                     <div className="dialog-copy-hint"><span>TXT:</span>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'prompt')}>Prompt</button>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'output')}>Truyện trả về</button>
-                      {workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item))?.output_exists && <small>Đã có output · chưa đổi trạng thái nghiệp vụ</small>}
+                      {outputReturned && <small>Extension đã trả về · chưa đổi trạng thái nghiệp vụ</small>}
                     </div>
-                  </article>) : <div className="lane-empty"><FileText size={28}/><strong>Không có thẻ phù hợp</strong><span>{lane.length ? 'Thử đổi bộ lọc hoặc từ khóa.' : 'Hãy bổ sung 14 ý tưởng cho AI này.'}</span></div>}</div>
+                  </article>;
+                  }) : <div className="lane-empty"><FileText size={28}/><strong>Không có thẻ phù hợp</strong><span>{lane.length ? 'Thử đổi bộ lọc hoặc từ khóa.' : 'Hãy bổ sung 14 ý tưởng cho AI này.'}</span></div>}</div>
                   <div className="lane-footer"><span><span className="mini-indicator"/> {ready} thẻ chưa giao</span><span>{lane.length} thẻ tổng</span></div>
                 </section>;
               })}
