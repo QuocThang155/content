@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, ttk
 import unicodedata
 import uuid
 
-APP_NAME = 'Story42 • Offline Studio'
+APP_NAME = 'THẮNG MIA • Offline Studio'
 VERSION = '2.0.0'
 TOTAL = 42
 AI_COUNT = 3
@@ -467,7 +467,7 @@ class Story42App(tk.Tk):
     def _build(self):
         top = tk.Frame(self, bg=COL['bg'], padx=20, pady=12)
         top.pack(fill='x')
-        tk.Label(top, text='STORY42', bg=COL['bg'], fg=COL['accent'],
+        tk.Label(top, text='THẮNG MIA', bg=COL['bg'], fg=COL['accent'],
                  font=('Segoe UI', 22, 'bold')).pack(side='left')
         self.label(top, 'OFFLINE STUDIO  /  3 AI  /  0 API', 10, COL['muted']).pack(side='left', padx=16)
         self.btn(top, 'Đổi / tạo ngày', self.change_day).pack(side='right', padx=(8, 0))
@@ -828,7 +828,7 @@ class Story42App(tk.Tk):
             messagebox.showinfo('Nhập thành công', f'Đã cập nhật 14 brief cho AI {ai}.\nTiếp tục AI khác hoặc quay về tab Điều phối.')
 
     def _refresh_history(self):
-        lines = [f'STORY42  /  v{VERSION}', '',
+        lines = [f'THẮNG MIA  /  v{VERSION}', '',
                  f'Số ý tưởng trong kho: {len(self.db["library"])}',
                  f'Số seed mẫu đã đưa vào ngày làm việc: {len(used_starter_ids(self.db))}/84',
                  f'Ngày có dữ liệu: {len(self.db["days"])}', '',
@@ -849,9 +849,9 @@ class Story42App(tk.Tk):
         self.history_text.configure(state='disabled')
 
     def export_json(self):
-        dest = filedialog.asksaveasfilename(title='Xuất bản sao Story42',
+        dest = filedialog.asksaveasfilename(title='Xuất bản sao THẮNG MIA',
                                            defaultextension='.json', filetypes=[('JSON', '*.json')],
-                                           initialfile=f'story42_backup_{today()}.json')
+                                           initialfile=f'thangmia_backup_{today()}.json')
         if not dest:
             return
         try:
@@ -861,7 +861,7 @@ class Story42App(tk.Tk):
             messagebox.showerror('Lỗi sao lưu', str(exc))
 
     def import_json(self):
-        source = filedialog.askopenfilename(title='Khôi phục bản sao Story42', filetypes=[('JSON', '*.json')])
+        source = filedialog.askopenfilename(title='Khôi phục bản sao THẮNG MIA', filetypes=[('JSON', '*.json')])
         if not source:
             return
         try:
@@ -883,7 +883,7 @@ class Story42App(tk.Tk):
             return
         dest = filedialog.asksaveasfilename(title='Xuất danh sách truyện', defaultextension='.csv',
                                            filetypes=[('CSV', '*.csv')],
-                                           initialfile=f'story42_{self.date_var.get()}.csv')
+                                           initialfile=f'thangmia_{self.date_var.get()}.csv')
         if not dest:
             return
         columns = ['slot', 'ai', 'status', 'theme', 'title', 'hero', 'antagonist', 'conflict', 'evidence', 'reversal', 'ending', 'source']
@@ -960,7 +960,7 @@ def main():
     if '--self-test' in sys.argv:
         sys.exit(0 if run_self_test() else 1)
     if '--help' in sys.argv or '-h' in sys.argv:
-        print('Story42 offline app\n  python Story42.py            Launch GUI\n  python Story42.py --self-test  Run tests\n  Data: ' + str(DATA_FILE))
+        print('THẮNG MIA offline app\n  python Story42.py            Launch GUI\n  python Story42.py --self-test  Run tests\n  Data: ' + str(DATA_FILE))
         return
     try:
         app = Story42App()

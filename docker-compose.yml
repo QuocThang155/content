@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     environment:
-      STORY42_DB_PATH: /data/story42.sqlite3
+      THANGMIA_DB_PATH: /data/thangmia.sqlite3
     volumes:
       - story42_data:/data
     restart: unless-stopped

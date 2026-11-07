@@ -2,17 +2,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from backend import core
 from backend.main import create_app
-from backend.store import Store
+from backend.store import Store, migrate_legacy_database
 
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.dir.name) / 'story42.sqlite3')
+        self.store = Store(Path(self.dir.name) / 'thangmia.sqlite3')
         self.client = TestClient(create_app(self.store))
         self.date = '2026-11-07'
 
@@ -128,6 +129,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/restore',json=json_data).status_code, 200)
         self.assertEqual(self.client.get('/api/overview',params={'date':self.date}).json()['stats'],before['stats'])
         self.assertEqual(self.client.get('/api/health').json()['ok'], True)
+
+
+class DatabaseMigrationTests(unittest.TestCase):
+    def test_legacy_database_is_backed_up_and_copied_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / 'legacy' / 'story42.sqlite3'
+            target = root / 'new' / 'thangmia.sqlite3'
+            Store(legacy)
+            with patch('backend.store.LEGACY_DATABASE_PATH', legacy), patch(
+                'backend.store.DEFAULT_DATABASE_PATH', target
+            ):
+                migrate_legacy_database(target)
+                self.assertTrue(target.exists())
+                backups = list(legacy.parent.glob('story42.sqlite3.migration-backup-*'))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(target.read_bytes(), legacy.read_bytes())
+
+                target.write_bytes(b'new database')
+                migrate_legacy_database(target)
+                self.assertEqual(target.read_bytes(), b'new database')
 
 
 if __name__ == '__main__':

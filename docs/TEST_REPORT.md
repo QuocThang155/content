@@ -1,4 +1,4 @@
-# Technical verification — Story42 Web v3.0.0
+# Technical verification — THẮNG MIA Web v3.0.0
 
 Tested in the delivery environment on 2026-11-07:
 

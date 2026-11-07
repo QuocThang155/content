@@ -1,4 +1,4 @@
-# Đặc tả yêu cầu phần mềm — Thắng Mia Web Studio
+# Đặc tả yêu cầu phần mềm — THẮNG MIA
 
 **Phiên bản:** 3.0.0  
 **Ngày cập nhật:** 07/11/2026  
@@ -6,14 +6,24 @@
 
 ## 1. Mục đích và phạm vi
 
-Thắng Mia Web Studio là ứng dụng web chạy cục bộ, hỗ trợ người dùng quản lý 42
-brief cốt truyện mỗi ngày cho ba phiên AI được người dùng vận hành thủ công.
+THẮNG MIA là ứng dụng web chạy cục bộ, hỗ trợ người dùng quản lý 42 brief cốt
+truyện mỗi ngày cho ba phiên AI được người dùng vận hành thủ công.
 Ứng dụng chỉ quản lý brief, prompt và tiến độ giao việc; không tự gọi dịch vụ
 AI, không tự động điều khiển website AI, không lưu truyện hoàn chỉnh và không
 đăng nội dung lên mạng xã hội.
 
 Giao diện người dùng bằng tiếng Việt. Prompt gửi cho AI được sinh bằng tiếng
 Anh và yêu cầu viết theo phong cách Philippine Taglish.
+
+### 1.1. Định danh dự án
+| Thành phần | Tên chuẩn |
+|---|---|
+| Tên dự án | `thangmia` |
+| GitHub repository | `thangmia` |
+| Tên trên giao diện | **THẮNG MIA** |
+| Frontend package | `thangmia-frontend` |
+| Backend API | `thangmia API` |
+| Thư mục output | `thangmia_output` |
 
 ## 2. Kiến trúc và công nghệ
 
@@ -26,13 +36,16 @@ Anh và yêu cầu viết theo phong cách Philippine Taglish.
 | Kết nối trình duyệt | Frontend gọi `/api/*`; Next.js rewrite request tới FastAPI |
 | Sao chép | Clipboard API của trình duyệt, có fallback `document.execCommand('copy')` |
 
-Mặc định backend sử dụng:
+Mặc định `thangmia API` sử dụng:
 
 ```text
-~/.story42_web/story42.sqlite3
+~/.thangmia/thangmia.sqlite3
 ```
 
-Có thể đổi vị trí bằng biến môi trường `STORY42_DB_PATH`. Dữ liệu được đọc và
+Có thể đổi vị trí bằng biến môi trường `THANGMIA_DB_PATH`. Nếu database cũ ở
+`~/.story42_web/story42.sqlite3` tồn tại mà database mới chưa có, backend sẽ
+sao lưu rồi tự động sao chép dữ liệu sang đường dẫn mới; database cũ không bị
+xóa hoặc ghi đè. Dữ liệu được đọc và
 ghi trong giao dịch SQLite `BEGIN IMMEDIATE` để tránh mất cập nhật khi có
 nhiều request đồng thời.
 
@@ -178,7 +191,7 @@ Tab **Lịch sử & sao lưu** hỗ trợ:
 - khôi phục toàn bộ dữ liệu từ JSON;
 - xác nhận trước khi khôi phục vì thao tác khôi phục ghi đè toàn bộ cơ sở dữ liệu.
 
-JSON v2 tương thích hai chiều với dữ liệu desktop Story42 cũ. File desktop gốc
+JSON v2 tương thích hai chiều với dữ liệu desktop thangmia cũ. File desktop gốc
 không bị ghi đè khi nhập vào web.
 
 ## 5. Đặc tả API
@@ -222,7 +235,7 @@ trạng thái hoặc thao tác ghi đè bị chặn.
   khác.
 - Ứng dụng không lưu toàn văn truyện hoàn chỉnh.
 - Chất lượng, độ dài và giới hạn trả lời của dịch vụ AI bên ngoài không thuộc
-  phạm vi kiểm soát của Story42.
+  phạm vi kiểm soát của THẮNG MIA.
 
 ## 7. Tiêu chí nghiệm thu
 

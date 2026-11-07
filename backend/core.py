@@ -14,7 +14,7 @@ import sys
 import unicodedata
 import uuid
 
-APP_NAME = 'Story42 • Offline Studio'
+APP_NAME = 'THẮNG MIA • Offline Studio'
 VERSION = '2.0.0'
 TOTAL = 42
 AI_COUNT = 3
@@ -391,5 +391,4 @@ def parse_planner(text, ai):
 
 def count_status(items):
     return {k: sum(s.get('status') == k for s in items) for k in STATUS_LABEL}
-
 

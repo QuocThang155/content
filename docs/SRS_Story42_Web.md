@@ -1,8 +1,8 @@
-# SRS Update — Story42 Web Studio
+# SRS Update — THẮNG MIA
 
 **Edition:** 3.0.0 — 2026-11-07  
 **Base specification:** `SRS_Story42_Desktop.md` (desktop 2.0.0).  
-**Migration policy:** preserve Story42's brief selection, 14×3 assignment, prompt content, manual AI operation, no-finished-story storage, statuses, and JSON schema.
+**Migration policy:** preserve the existing brief selection, 14×3 assignment, prompt content, manual AI operation, no-finished-story storage, statuses, and JSON schema.
 
 ## 1. Changes of platform
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | UI | Python Tkinter desktop | React/Next.js + TypeScript in browser |
 | Business logic | Python in same process | Python `backend/core.py`, called through FastAPI |
-| Persistence | `~/.story42_offline/project.json` | SQLite `~/.story42_web/story42.sqlite3` |
+| Persistence | `~/.story42_offline/project.json` | SQLite `~/.thangmia/thangmia.sqlite3` |
 | Backup | JSON schema version 2 | JSON schema version 2 (bidirectional compatibility) |
 | Clipboard | OS Tkinter clipboard | browser clipboard API with fallback |
 | Deployment | Python desktop | local web app, optionally Docker |
@@ -53,6 +53,7 @@ API field contracts are visible at `/docs` when FastAPI is running.
 ## 4. Safety, data, and access
 
 - One project on a local machine. Data stored inside SQLite and serialized in a transaction to prevent lost updates from parallel HTTP writes.
+- On first startup, an existing `~/.story42_web/story42.sqlite3` is backed up and copied to the new path only when `~/.thangmia/thangmia.sqlite3` does not exist. Migration never deletes the legacy database or overwrites an existing new database.
 - The backend is bound to loopback by default in local run instructions; the standard Next.js `/api` rewrite proxies to it.
 - JSON restoration checks file version and content schema before replacement; restore is destructive and requires explicit browser confirmation.
 - Browser Clipboard access requires user gesture and may be blocked outside localhost or HTTPS. Failed copy must **not** change an item's status.

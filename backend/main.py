@@ -1,4 +1,4 @@
-"""Story42 Web API. Run: uvicorn backend.main:app --reload --port 8000"""
+"""THẮNG MIA API. Run: uvicorn backend.main:app --reload --port 8000"""
 from __future__ import annotations
 import datetime as dt
 import json
@@ -11,9 +11,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from . import core
-from .store import Store
+from .store import DEFAULT_DATABASE_PATH, Store
 
-DEFAULT_PATH = Path(os.environ.get('STORY42_DB_PATH', '~/.story42_web/story42.sqlite3')).expanduser()
+DEFAULT_PATH = Path(os.environ.get('THANGMIA_DB_PATH', str(DEFAULT_DATABASE_PATH))).expanduser()
 
 
 def valid_date(date: str) -> str:
@@ -121,11 +121,11 @@ class ImportPlan(BaseModel):
 
 def create_app(store: Store | None = None) -> FastAPI:
     database = store or Store(DEFAULT_PATH)
-    app = FastAPI(title='Story42 Web API', version='3.0.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
+    app = FastAPI(title='thangmia API', version='3.0.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
 
     @app.get('/api/health')
     def health():
-        return {'ok': True, 'app': 'Story42 Web', 'version': '3.0.0'}
+        return {'ok': True, 'app': 'THẮNG MIA', 'version': '3.0.0'}
 
     @app.get('/api/overview')
     def overview(date: str = Query(...)):
@@ -292,7 +292,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     def download_backup():
         content = json.dumps(database.read(), ensure_ascii=False, indent=2).encode('utf-8')
         return Response(content, media_type='application/json; charset=utf-8',
-                        headers={'Content-Disposition': 'attachment; filename="story42_backup.json"'})
+                        headers={'Content-Disposition': 'attachment; filename="thangmia_backup.json"'})
 
     @app.post('/api/restore')
     async def restore(request: Request):

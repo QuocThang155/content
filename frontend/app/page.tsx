@@ -60,7 +60,7 @@ function statsForItems(items: Story[]): Overview['stats'] {
 type Notice = { text: string; type: 'success' | 'error' | 'info' };
 type SimilarityReport = { title: string; rows: { left: string; right?: string; score: number }[] };
 
-export default function Story42Page() {
+export default function ThangMiaPage() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [date, setDate] = useState(localToday);
   const [overview, setOverview] = useState<Overview>(emptyOverview);
@@ -444,12 +444,12 @@ export default function Story42Page() {
             <div className="history-grid"><section className="panel history-table-panel"><div className="panel-head"><div><h2>Lịch sử sản xuất</h2><p>Tình trạng các ngày làm việc đã lưu</p></div><button className="icon-button" onClick={() => void refreshHistory()} title="Làm mới"><RefreshCw size={18}/></button></div>
               <div className="table-scroll"><table className="data-table"><thead><tr><th>NGÀY LÀM VIỆC</th><th>SỐ THẺ</th><th>ĐÃ GIAO</th><th>HOÀN TẤT</th><th>TIẾN ĐỘ</th></tr></thead><tbody>{history?.days.map(day => <tr key={day.date}><td><button className="date-link" onClick={() => {setDate(day.date);setTab('dashboard');}}><CalendarDays size={15}/>{prettyDate(day.date)}</button></td><td>{day.count}</td><td>{day.assigned}</td><td><strong>{day.done}</strong></td><td><div className="table-progress"><div style={{width:`${day.count ? day.done/day.count*100 : 0}%`}} /></div></td></tr>)}{!history?.days.length && <tr><td colSpan={5} className="empty-table">Chưa có lịch sử ngày làm việc.</td></tr>}</tbody></table></div>
             </section><section className="panel backup-panel"><div className="panel-head"><div><h2>Sao lưu & khôi phục</h2><p>Dữ liệu JSON tương thích bản desktop</p></div><FileJson size={24} className="backup-icon"/></div>
-              <div className="backup-option"><div className="backup-option-icon"><CloudDownload size={20}/></div><div><strong>Xuất bản sao JSON</strong><p>Tải toàn bộ thư viện, ngày và trạng thái</p></div><button className="small-button" onClick={() => void execute('backup', () => download('/backup','story42_backup.json'))}><Download size={15}/> Tải về</button></div>
+              <div className="backup-option"><div className="backup-option-icon"><CloudDownload size={20}/></div><div><strong>Xuất bản sao JSON</strong><p>Tải toàn bộ thư viện, ngày và trạng thái</p></div><button className="small-button" onClick={() => void execute('backup', () => download('/backup','thangmia_backup.json'))}><Download size={15}/> Tải về</button></div>
               <div className="backup-option"><div className="backup-option-icon"><RotateCcw size={20}/></div><div><strong>Khôi phục bản sao</strong><p>Nhập file project.json từ bản desktop hoặc web</p></div><button className="small-button" onClick={() => fileRef.current?.click()}><FileJson size={15}/> Chọn file</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={(e) => void restoreBackup(e.target.files?.[0])}/></div>
               <div className="danger-note"><AlertCircle size={17}/> Khôi phục sẽ ghi đè toàn bộ dữ liệu hiện có. Hãy tải bản sao trước.</div>
             </section></div>
           </>}
-          <div className="page-footer"><span><ShieldCheck size={14}/> Offline-first · Không API AI · Không lưu toàn văn truyện</span><span>Thắng Mia Web Studio v3.0.0</span></div>
+          <div className="page-footer"><span><ShieldCheck size={14}/> Offline-first · Không API AI · Không lưu toàn văn truyện</span>          <span>THẮNG MIA Web Studio v3.0.0</span></div>
         </div>
       </main>
 
