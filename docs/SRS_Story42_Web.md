@@ -20,7 +20,7 @@
 
 - **FR-01/02:** GET overview and POST days; 84 seeds and 42/day allocation remain in reused core.
 - **FR-03:** 3 browser columns, 14 briefs per AI, progress metrics and copy next button.
-- **FR-04:** Full, Part 1, Part 2 prompt text is generated on backend by original `story_prompt`.
+- **FR-04:** Full, Part 1, Part 2 prompt text is rendered on backend only from user-saved templates.
 - **FR-05:** `ready`, `sent`, `part1`, `done`, toggling completion and autosaving are preserved. Frontend posts copy status after successful clipboard access, not before.
 - **FR-06:** Edit seven brief fields with a minimum length; IDs, themes, slots and AI cannot be edited.
 - **FR-07:** weighted Jaccard same as desktop; scan day and compare individual brief with archived days; warning is explicitly lexical-only.
@@ -63,7 +63,7 @@ API field contracts are visible at `/docs` when FastAPI is running.
 
 1. Two consecutive days generate 42 distinct briefs; the third day will not recycle original seeds.
 2. Each day has 14 briefs per AI and 3 per category.
-3. Prompt Full/P1/P2 retains Taglish instructions, and copy only updates status if browser copy succeeds.
+3. Full/P1/P2 templates are empty for new or legacy databases, validate only the seven supported brief variables, and copy only updates status if browser copy succeeds.
 4. Editing updates the next generated prompt and persists after restart.
 5. Import refuses 13 lines, blocks replacing already-assigned lanes, preserves other AI lanes, and allows an explicitly confirmed lexical warning.
 6. Backup/restore roundtrip preserves statuses and days, and CSV starts with a UTF-8 BOM.

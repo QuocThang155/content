@@ -6,12 +6,12 @@ import {
   Check, CheckCircle2, CircleHelp, Clipboard, CloudDownload,
   Database, Download, FileJson, FileText, Filter, History, LayoutDashboard,
   Layers, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Search,
-  ShieldCheck, Sparkles, WandSparkles, X, Zap,
+  Settings2, ShieldCheck, Sparkles, WandSparkles, X, Zap,
 } from 'lucide-react';
 import { api, ApiError, copyClipboard, download } from '@/lib/api';
 import type {
   BriefFields, Duplicate, HistoryData, Mode, Overview, Pair, PlanConflict, Story, Tab,
-  WorkspaceConfig, WorkspaceFile, WorkspaceItem,
+  WorkspaceConfig, WorkspaceFile, WorkspaceItem, PromptMode, PromptTemplates,
 } from '@/lib/types';
 
 const FIELD_LABELS: { key: keyof BriefFields; label: string; placeholder: string }[] = [
@@ -44,6 +44,9 @@ function briefPayload(item: Story): BriefFields {
   return { title: item.title, hero: item.hero, antagonist: item.antagonist, conflict: item.conflict,
     evidence: item.evidence, reversal: item.reversal, ending: item.ending };
 }
+function laneSlot(item: Pick<Story, 'slot' | 'lane_slot' | 'ai'>): number {
+  return item.lane_slot ?? item.slot - (item.ai - 1) * 14;
+}
 
 function statsForItems(items: Story[]): Overview['stats'] {
   const counts = items.reduce((result, item) => {
@@ -74,6 +77,8 @@ export default function ThangMiaPage() {
   const [unavailable, setUnavailable] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'ready' | 'active' | 'done'>('all');
+  const [vaultSort, setVaultSort] = useState<'slot' | 'title' | 'status'>('slot');
+  const [vaultCollapsed, setVaultCollapsed] = useState<Record<1 | 2 | 3, boolean>>({ 1: false, 2: false, 3: false });
   const [editing, setEditing] = useState<Story | null>(null);
   const [form, setForm] = useState<BriefFields | null>(null);
   const [report, setReport] = useState<SimilarityReport | null>(null);
@@ -87,8 +92,14 @@ export default function ThangMiaPage() {
   const [configOpen, setConfigOpen] = useState(false);
   const [configFolder, setConfigFolder] = useState('');
   const [fileViewer, setFileViewer] = useState<{
-    item: Story; kind: 'prompt' | 'output'; content: string; hash: string | null; filename: string; exists: boolean;
+    item: Story; kind: 'prompt' | 'output'; content: string; hash: string | null; filename: string; exists: boolean; warning?: string;
   } | null>(null);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplates>({ full: '', part1: '', part2: '' });
+  const [promptDrafts, setPromptDrafts] = useState<PromptTemplates>({ full: '', part1: '', part2: '' });
+  const [promptMode, setPromptMode] = useState<PromptMode>('full');
+  const [promptPreview, setPromptPreview] = useState('');
+  const [promptPreviewUid, setPromptPreviewUid] = useState('');
+  const [promptLoading, setPromptLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   function toast(text: string, type: Notice['type'] = 'success') { setNotice({ text, type }); }
@@ -129,17 +140,17 @@ export default function ThangMiaPage() {
     catch (err) { toast(messageOf(err), 'error'); }
   }, []);
   const refreshWorkspace = useCallback(async () => {
-    if (!overview.exists || tab !== 'workflow') return;
+    if (!overview.exists || !['workflow', 'vault'].includes(tab)) return;
     try {
       const statuses = await Promise.all(([1, 2, 3] as const).map((ai) =>
         api<{ items: WorkspaceItem[] }>(`/workspace/status?date=${date}&ai=${ai}`)));
       setWorkspaceStatus(Object.fromEntries(statuses.map((status, index) => [index + 1, status.items])));
     } catch (err) { toast(messageOf(err), 'error'); }
   }, [date, overview.exists, tab]);
-  // Workspace status is intentionally polled only while Workflow is open.
+  // Workspace status is polled while Workflow or Kho ý tưởng is open.
   useEffect(() => {
-    if (tab !== 'workflow' || !overview.exists) return;
-    // Polling synchronizes external workspace files while Workflow is open.
+    if (!['workflow', 'vault'].includes(tab) || !overview.exists) return;
+    // Polling synchronizes external workspace files while either view is open.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshWorkspace();
     const timer = window.setInterval(() => void refreshWorkspace(), 5000);
@@ -192,6 +203,22 @@ export default function ThangMiaPage() {
     });
   }
 
+  async function updateMetadata(item: Story, changes: { notes?: string; favorite?: boolean; draft?: boolean }) {
+    await execute(`metadata-${item.uid}`, async () => {
+      const result = await api<{ item: Story }>(`/days/${date}/items/${item.uid}/metadata`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          notes: changes.notes ?? item.notes ?? '',
+          favorite: changes.favorite ?? item.favorite ?? false,
+          draft: changes.draft ?? item.draft ?? false,
+        }),
+      });
+      setOverview((current) => ({ ...current, items: current.items.map((candidate) =>
+        candidate.uid === item.uid ? result.item : candidate) }));
+      toast('Đã lưu thông tin Kho ý tưởng.');
+    });
+  }
+
   async function undoCopied(item: Story) {
     await execute(`undo-copy-${item.uid}`, async () => {
       const result = await api<{ status: Story['status']; ideas_remaining: number }>(
@@ -205,7 +232,13 @@ export default function ThangMiaPage() {
     });
   }
 
-  function openEditor(item: Story) { setEditing(item); setForm(briefPayload(item)); }
+  function openEditor(item: Story) {
+    const fileStatus = workspaceStatus[item.ai]?.find((entry) => entry.slot === laneSlot(item));
+    if (fileStatus?.prompt_exists || fileStatus?.output_exists) {
+      toast('Brief đã có file TXT/output. Sửa brief không tự xóa hoặc ghi đè file cũ.', 'info');
+    }
+    setEditing(item); setForm(briefPayload(item));
+  }
   async function saveEdit(close = true): Promise<void> {
     if (!editing || !form) return;
     if (Object.values(form).some((x) => x.trim().length < 7)) {
@@ -268,7 +301,53 @@ export default function ThangMiaPage() {
       toast(`Đã sao chép lệnh tạo 14 brief cho AI ${plannerAi}.`);
     });
   }
+  const loadPromptTemplates = useCallback(async () => {
+    setPromptLoading(true);
+    try {
+      const result = await api<{ templates: PromptTemplates }>('/prompt-templates');
+      setPromptTemplates(result.templates);
+      setPromptDrafts(result.templates);
+      setPromptPreview('');
+    } catch (err) { toast(messageOf(err), 'error'); }
+    finally { setPromptLoading(false); }
+  }, []);
+  // Loading persisted templates when entering this screen keeps the settings view current.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { if (tab === 'prompt-settings') void loadPromptTemplates(); }, [tab, loadPromptTemplates]);
+  async function savePromptTemplate() {
+    await execute(`prompt-save-${promptMode}`, async () => {
+      const result = await api<{ mode: PromptMode; content: string }>(`/prompt-templates/${promptMode}`, {
+        method: 'PUT', body: JSON.stringify({ content: promptDrafts[promptMode] }),
+      });
+      setPromptTemplates((current) => ({ ...current, [result.mode]: result.content }));
+      setPromptDrafts((current) => ({ ...current, [result.mode]: result.content }));
+      toast(`Đã lưu template ${result.mode.toUpperCase()}.`);
+    });
+  }
+  async function deletePromptTemplate() {
+    if (!window.confirm(`Xóa nội dung template ${promptMode.toUpperCase()}? Template sẽ trở về trạng thái chưa cấu hình.`)) return;
+    await execute(`prompt-delete-${promptMode}`, async () => {
+      await api(`/prompt-templates/${promptMode}`, { method: 'DELETE' });
+      setPromptTemplates((current) => ({ ...current, [promptMode]: '' }));
+      setPromptDrafts((current) => ({ ...current, [promptMode]: '' }));
+      setPromptPreview('');
+      toast(`Đã xóa template ${promptMode.toUpperCase()}.`);
+    });
+  }
+  async function previewPromptTemplate() {
+    const item = overview.items.find((candidate) => candidate.uid === promptPreviewUid) || overview.items[0];
+    if (!item) return toast('Ngày này chưa có brief để xem trước.', 'info');
+    await execute('prompt-preview', async () => {
+      const result = await api<{ text: string }>('/prompt-templates/preview', {
+        method: 'POST',
+        body: JSON.stringify({ date, uid: item.uid, mode: promptMode, content: promptDrafts[promptMode] }),
+      });
+      setPromptPreview(result.text);
+    });
+  }
   async function exportLane(ai: 1 | 2 | 3) {
+    const existing = workspaceStatus[ai]?.some((entry) => entry.prompt_exists || entry.output_exists);
+    if (existing && !window.confirm(`AI ${ai} đã có file TXT hoặc output. Xuất lại sẽ bỏ qua file xung đột và không ghi đè. Tiếp tục?`)) return;
     await execute(`export-${ai}`, async () => {
       const result = await api<{ written: number; skipped: number; folder: string }>('/workspace/export',
         { method: 'POST', body: JSON.stringify({ date, ai }) });
@@ -298,16 +377,16 @@ export default function ThangMiaPage() {
     });
   }
   async function openWorkspaceFile(item: Story, kind: 'prompt' | 'output') {
-    const status = workspaceStatus[item.ai]?.find((entry) => entry.slot === item.slot - (item.ai - 1) * 14);
+    const status = workspaceStatus[item.ai]?.find((entry) => entry.slot === laneSlot(item));
     try {
-      const result = await api<WorkspaceFile>(`/workspace/file?date=${date}&ai=${item.ai}&slot=${item.slot - (item.ai - 1) * 14}&kind=${kind}`);
-      setFileViewer({ item, kind, content: result.content, hash: result.hash, filename: result.filename, exists: result.exists });
+      const result = await api<WorkspaceFile>(`/workspace/file?date=${date}&ai=${item.ai}&slot=${laneSlot(item)}&kind=${kind}`);
+      setFileViewer({ item, kind, content: result.content, hash: result.hash, filename: result.filename, exists: result.exists, warning: result.warning });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
         setFileViewer({
           item, kind, content: '', hash: null,
           filename: kind === 'prompt' ? (status?.prompt_filename || '') : (status?.output_filename || ''),
-          exists: false,
+          exists: false, warning: err.status === 409 ? err.message : undefined,
         });
         return;
       }
@@ -317,7 +396,7 @@ export default function ThangMiaPage() {
   async function saveWorkspaceFile() {
     if (!fileViewer || !fileViewer.exists) return;
     await execute('workspace-file-save', async () => {
-      const slot = fileViewer.item.slot - (fileViewer.item.ai - 1) * 14;
+      const slot = laneSlot(fileViewer.item);
       await api('/workspace/file', {
         method: 'PUT',
         body: JSON.stringify({
@@ -334,7 +413,7 @@ export default function ThangMiaPage() {
   async function deleteWorkspaceFile() {
     if (!fileViewer || !fileViewer.exists || !window.confirm(`Xóa file ${fileViewer.filename}? Brief trong SQLite sẽ không bị xóa.`)) return;
     await execute('workspace-file-delete', async () => {
-      const slot = fileViewer.item.slot - (fileViewer.item.ai - 1) * 14;
+      const slot = laneSlot(fileViewer.item);
       await api(`/workspace/file?date=${date}&ai=${fileViewer.item.ai}&slot=${slot}&kind=${fileViewer.kind}`, { method: 'DELETE' });
       setFileViewer({ ...fileViewer, content: '', hash: null, exists: false });
       await refreshWorkspace();
@@ -415,9 +494,11 @@ export default function ThangMiaPage() {
 
   const navItems: { id: Tab; title: string; desc: string; icon: typeof LayoutDashboard }[] = [
     { id: 'dashboard', title: 'Trang chủ', desc: 'Tổng quan hệ thống', icon: LayoutDashboard },
+    { id: 'vault', title: 'Kho ý tưởng', desc: '42 brief theo ngày', icon: Database },
     { id: 'workflow', title: 'Workflow', desc: 'Hàng đợi sản xuất', icon: Layers },
     { id: 'planner', title: 'Bổ sung ý tưởng', desc: '14 brief / AI', icon: WandSparkles },
     { id: 'history', title: 'Lịch sử & sao lưu', desc: 'Dữ liệu an toàn', icon: History },
+    { id: 'prompt-settings', title: 'Cài đặt Prompt', desc: 'Template Full / P1 / P2', icon: Settings2 },
   ];
 
   return (
@@ -436,18 +517,6 @@ export default function ThangMiaPage() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-divider" />
-        <div className="sidebar-section-label">THÔNG TIN HỆ THỐNG</div>
-        <div className="sidebar-facts">
-          <div><span><Database size={16}/> Kho ý tưởng</span><strong>{overview.library_size}</strong></div>
-          <div><span><Layers size={16}/> Ngày làm việc</span><strong>{overview.days_count}</strong></div>
-          <div><span><Zap size={16}/> Kết nối AI</span><span className="tiny-pill">Thủ công</span></div>
-        </div>
-        <div className="sidebar-bottom">
-          <div className="privacy-head"><ShieldCheck size={20}/><strong>Riêng tư & kiểm soát</strong></div>
-          <p>Không gọi API AI. Không lưu truyện hoàn chỉnh. Dữ liệu được giữ trong backend của bạn.</p>
-          <span className="system-online"><span/> Hệ thống web nội bộ</span>
-        </div>
       </aside>
 
       <main className="main-area">
@@ -469,7 +538,60 @@ export default function ThangMiaPage() {
                 <div className="stat-card"><div className="stat-top"><span>CHƯA GIAO</span><div className="stat-icon purple"><Clipboard size={19}/></div></div><div className="stat-number">{overview.stats.ready}<span> truyện</span></div><div className="stat-foot">Đang chờ gửi tới AI</div></div>
               </div>
             </section>
+            <div className="home-info-grid">
+              <section className="panel system-info"><div className="panel-step-label">THÔNG TIN HỆ THỐNG</div>
+                <div className="system-info-row"><span><Database size={16}/> Kho ý tưởng</span><strong>{overview.library_size}</strong></div>
+                <div className="system-info-row"><span><Layers size={16}/> Ngày làm việc</span><strong>{overview.days_count}</strong></div>
+                <div className="system-info-row"><span><Zap size={16}/> Kết nối AI</span><strong className="tiny-pill">Thủ công</strong></div>
+              </section>
+              <section className="panel privacy-card"><div className="privacy-head"><ShieldCheck size={20}/><strong>Riêng tư & kiểm soát</strong></div>
+                <p>Không gọi API AI. Không lưu truyện hoàn chỉnh. Dữ liệu được giữ trong backend của bạn.</p>
+                <span className="system-online"><span/> Hệ thống web nội bộ</span>
+              </section>
+            </div>
 
+          </>}
+
+          {tab === 'vault' && <>
+            <section className="workflow-section vault-page">
+              <div className="section-heading"><div><div className="eyebrow muted">IDEA VAULT</div><h2>Kho ý tưởng <span className="num-badge">42 brief</span></h2><p>Xem, tìm kiếm, chỉnh sửa và ghi chú brief theo ngày. Dữ liệu dùng chung với Workflow.</p></div>
+                <div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày kho ý tưởng" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới kho ý tưởng" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
+              <div className="filter-row"><div className="search-box"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm trong 7 trường brief..." aria-label="Tìm ý tưởng" />{search && <button aria-label="Xóa tìm kiếm" onClick={() => setSearch('')}><X size={14}/></button>}</div>
+                <div className="filter-pills"><Filter size={16}/>{([['all','Tất cả'],['ready','Chưa giao'],['active','Đang xử lý'],['done','Hoàn tất']] as const).map(([key,label]) => <button key={key} onClick={() => setFilter(key)} className={filter === key ? 'selected':''}>{label}</button>)}</div>
+                <select className="vault-sort" value={vaultSort} onChange={(e) => setVaultSort(e.target.value as typeof vaultSort)}><option value="slot">Sắp xếp vị trí</option><option value="title">Sắp xếp tiêu đề</option><option value="status">Sắp xếp trạng thái</option></select></div>
+              <div className="vault-grid">{([1,2,3] as const).map((ai) => {
+                const items = visibleItems.filter((item) => item.ai === ai).sort((a, b) =>
+                  vaultSort === 'title' ? a.title.localeCompare(b.title) :
+                  vaultSort === 'status' ? a.status.localeCompare(b.status) : a.slot - b.slot);
+                return <section className={`vault-lane ${vaultCollapsed[ai] ? 'collapsed' : ''}`} key={ai}><div className="vault-lane-head"><strong>AI {ai}</strong><span>{items.length} / 14</span><button type="button" className="small-button vault-collapse" onClick={() => setVaultCollapsed((current) => ({ ...current, [ai]: !current[ai] }))}>{vaultCollapsed[ai] ? 'Mở rộng' : 'Thu gọn'}</button></div>
+                  <div className="vault-lane-cards">{items.map((item) => {
+                    const fileStatus = workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item));
+                    return <article className="vault-card" key={item.uid}>
+                      <div className="card-meta"><span className="card-index">#{String(laneSlot(item)).padStart(2, '0')}</span><span>{overview.theme_names[item.theme] || item.theme}</span><span className={`status-pill ${item.status}`}>{STATUSES[item.status]}</span></div>
+                      <h3>{item.title}</h3>
+                      <div className="vault-fields">{FIELD_LABELS.map(({key, label}) => <div key={key}><b>{label}</b><span>{item[key]}</span></div>)}</div>
+                      <div className="vault-meta-actions"><button className={`small-button ${item.favorite ? 'favorite-active' : ''}`} onClick={() => void updateMetadata(item, { favorite: !item.favorite })}>★ {item.favorite ? 'Đã thích' : 'Yêu thích'}</button><button className="small-button" onClick={() => void updateMetadata(item, { draft: !item.draft })}>{item.draft ? 'Bản nháp' : 'Đánh dấu nháp'}</button><button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa</button></div>
+                      <textarea className="vault-notes" value={item.notes || ''} onChange={(e) => setOverview((current) => ({ ...current, items: current.items.map((candidate) => candidate.uid === item.uid ? { ...candidate, notes: e.target.value } : candidate) }))} onBlur={(e) => void updateMetadata(item, { notes: e.target.value })} placeholder="Ghi chú riêng..." rows={2}/>
+                      {fileStatus?.prompt_exists || fileStatus?.output_exists ? <div className="vault-warning"><AlertCircle size={14}/> Đã có file TXT/output; chỉnh sửa không tự xóa hoặc ghi đè file cũ.</div> : null}
+                    </article>;
+                  })}</div>
+                </section>;
+              })}</div>
+            </section>
+          </>}
+
+          {tab === 'prompt-settings' && <>
+            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> PROMPT TEMPLATE SETTINGS</div><h1>Cài đặt <span>Prompt</span></h1><p>Tự nhập và lưu độc lập ba template. Ứng dụng không cung cấp prompt mặc định.</p></div>
+              <button className="icon-button" aria-label="Tải lại template" title="Tải lại" onClick={() => void loadPromptTemplates()}><RefreshCw size={18}/></button></div>
+            <section className="panel prompt-settings-panel">
+              <div className="filter-pills">{(['full','part1','part2'] as PromptMode[]).map((mode) =>
+                <button key={mode} className={promptMode === mode ? 'selected' : ''} onClick={() => { setPromptMode(mode); setPromptPreview(''); }}>{mode === 'full' ? 'Full' : mode === 'part1' ? 'Part 1' : 'Part 2'}</button>)}</div>
+              <p>Template hiện tại: {promptTemplates[promptMode].trim() ? 'Đã cấu hình' : 'Chưa cấu hình'}. Biến hợp lệ: <code>{'{{title}}'}</code>, <code>{'{{hero}}'}</code>, <code>{'{{antagonist}}'}</code>, <code>{'{{conflict}}'}</code>, <code>{'{{evidence}}'}</code>, <code>{'{{reversal}}'}</code>, <code>{'{{ending}}'}</code>.</p>
+              <div className="view-controls"><label>Brief xem trước <select value={promptPreviewUid || overview.items[0]?.uid || ''} onChange={(e) => { setPromptPreviewUid(e.target.value); setPromptPreview(''); }}><option value="">Chưa có brief</option>{overview.items.map((item) => <option key={item.uid} value={item.uid}>AI {item.ai} · #{String(laneSlot(item)).padStart(2, '0')} · {item.title}</option>)}</select></label></div>
+              <textarea className="plan-textarea" rows={12} value={promptDrafts[promptMode]} onChange={(e) => { setPromptDrafts((current) => ({ ...current, [promptMode]: e.target.value })); setPromptPreview(''); }} placeholder="Nhập toàn bộ câu lệnh tại đây..." spellCheck={false} />
+              <div className="dialog-actions"><button className="button secondary" onClick={() => setPromptDrafts((current) => ({ ...current, [promptMode]: promptTemplates[promptMode] }))} disabled={promptDrafts[promptMode] === promptTemplates[promptMode]}><RotateCcw size={16}/> Hủy thay đổi</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => void deletePromptTemplate()} disabled={!!working || !promptDrafts[promptMode]}><X size={16}/> Xóa mẫu</button><button className="button secondary" onClick={() => void previewPromptTemplate()} disabled={!!working || promptLoading}><Search size={16}/> Xem trước</button><button className="button primary" onClick={() => void savePromptTemplate()} disabled={!!working || promptDrafts[promptMode] === promptTemplates[promptMode]}><Check size={16}/> Lưu template</button></div></div>
+              {promptPreview && <div className="panel"><div className="panel-step-label">XEM TRƯỚC · {prettyDate(date)} · BRIEF ĐẦU TIÊN</div><pre className="prompt-preview">{promptPreview}</pre></div>}
+            </section>
           </>}
 
           {tab === 'workflow' && <>
@@ -518,7 +640,7 @@ export default function ThangMiaPage() {
                     }}
                     tabIndex={laneViewAll[ai] ? 0 : undefined}
                     role={laneViewAll[ai] ? 'button' : undefined}>
-                    <div className="card-meta"><span className="card-index">#{String(item.slot).padStart(2, '0')}</span><span className="meta-sep">·</span><span className="card-theme">{overview.theme_names[item.theme] || item.theme}</span></div>
+                    <div className="card-meta"><span className="card-index">#{String(laneSlot(item)).padStart(2, '0')}</span><span className="meta-sep">·</span><span className="card-theme">{overview.theme_names[item.theme] || item.theme}</span></div>
                     <div className="story-title-row"><h4>{item.title}</h4><span className={`status-pill ${item.status}`}><span/>{STATUSES[item.status]}</span></div>
                     <p className="card-conflict">{item.conflict}</p>
                     <div className="story-card-actions" onClick={(event) => event.stopPropagation()}><button type="button" className="small-primary" disabled={!!working} onClick={() => void copyStory(item, 'full')}><Clipboard size={14}/> Sao chép</button>
@@ -528,7 +650,7 @@ export default function ThangMiaPage() {
                     <div className="dialog-copy-hint"><span>TXT:</span>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'prompt')}>Prompt</button>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'output')}>Truyện trả về</button>
-                      {workspaceStatus[ai]?.find((entry) => entry.slot === item.slot - (ai - 1) * 14)?.output_exists && <small>Đã có output · chưa đổi trạng thái nghiệp vụ</small>}
+                      {workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item))?.output_exists && <small>Đã có output · chưa đổi trạng thái nghiệp vụ</small>}
                     </div>
                   </article>) : <div className="lane-empty"><FileText size={28}/><strong>Không có thẻ phù hợp</strong><span>{lane.length ? 'Thử đổi bộ lọc hoặc từ khóa.' : 'Hãy bổ sung 14 ý tưởng cho AI này.'}</span></div>}</div>
                   <div className="lane-footer"><span><span className="mini-indicator"/> {ready} thẻ chưa giao</span><span>{lane.length} thẻ tổng</span></div>
@@ -572,7 +694,7 @@ export default function ThangMiaPage() {
       </main>
 
       {editing && form && <div className="modal-backdrop" onMouseDown={(e) => {if(e.target === e.currentTarget){setEditing(null);setForm(null);}}}>
-        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label="Chỉnh sửa brief"><div className="dialog-head"><div><div className="eyebrow muted">STORY BRIEF EDITOR · #{String(editing.slot).padStart(2,'0')}</div><h2>Chỉnh sửa cốt truyện</h2><p>{overview.theme_names[editing.theme]} · AI {editing.ai}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => {setEditing(null);setForm(null);}}><X size={21}/></button></div>
+        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label="Chỉnh sửa brief"><div className="dialog-head"><div><div className="eyebrow muted">STORY BRIEF EDITOR · #{String(laneSlot(editing)).padStart(2,'0')}</div><h2>Chỉnh sửa cốt truyện</h2><p>{overview.theme_names[editing.theme]} · AI {editing.ai}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => {setEditing(null);setForm(null);}}><X size={21}/></button></div>
           <div className="edit-fields">{FIELD_LABELS.map(({key,label,placeholder}) => <label key={key} className="edit-field"><span>{label}</span>{key === 'title' ? <input value={form[key]} onChange={e => setForm({...form,[key]:e.target.value})} placeholder={placeholder}/>:<textarea value={form[key]} onChange={e => setForm({...form,[key]:e.target.value})} placeholder={placeholder} rows={2}/>}</label>)}</div>
           <div className="dialog-actions"><button className="button subtle" onClick={() => void scanEdited()} disabled={!!working}><Search size={16}/> Kiểm tra gần giống</button><div className="dialog-right-actions"><button className="button secondary" disabled={!!working} onClick={() => {setEditing(null);setForm(null);}}>Hủy</button><button className="button primary" disabled={!!working} onClick={() => void saveEdit()}><Check size={16}/> Lưu & đóng</button></div></div>
           <div className="dialog-copy-hint"><span>Lưu thay đổi & sao chép prompt:</span><button onClick={() => void saveAndCopy('full')} disabled={!!working}>Full</button><button onClick={() => void saveAndCopy('part1')} disabled={!!working}>Part 1</button><button onClick={() => void saveAndCopy('part2')} disabled={!!working}>Part 2</button></div>
@@ -586,8 +708,8 @@ export default function ThangMiaPage() {
         </section></div>}
       {fileViewer && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setFileViewer(null);}}>
         <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label={fileViewer.kind === 'prompt' ? 'Prompt TXT' : 'Truyện trả về'}>
-          <div className="dialog-head"><div><div className="eyebrow muted">{fileViewer.kind === 'prompt' ? 'PROMPT TXT' : 'GEMINI OUTPUT'}</div><h2>{fileViewer.kind === 'prompt' ? 'Prompt' : 'Truyện trả về'}</h2><p>{fileViewer.filename || 'Chưa có file'} · AI {fileViewer.item.ai} · slot {String(fileViewer.item.slot - (fileViewer.item.ai - 1) * 14).padStart(2, '0')}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setFileViewer(null)}><X size={21}/></button></div>
-          {!fileViewer.exists ? <div className="report-empty"><FileText size={35}/><strong>{fileViewer.kind === 'output' ? 'Chưa có kết quả' : 'Chưa có prompt TXT'}</strong><p>File chưa tồn tại trong workspace hiện tại.</p></div> :
+          <div className="dialog-head"><div><div className="eyebrow muted">{fileViewer.kind === 'prompt' ? 'PROMPT TXT' : 'GEMINI OUTPUT'}</div><h2>{fileViewer.kind === 'prompt' ? 'Prompt' : 'Truyện trả về'}</h2><p>{fileViewer.filename || 'Chưa có file'} · AI {fileViewer.item.ai} · slot {String(laneSlot(fileViewer.item)).padStart(2, '0')}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setFileViewer(null)}><X size={21}/></button></div>
+          {!fileViewer.exists ? <div className="report-empty"><FileText size={35}/><strong>{fileViewer.kind === 'output' ? 'Chưa có kết quả' : 'Chưa có prompt TXT'}</strong><p>{fileViewer.warning || 'File chưa tồn tại trong workspace hiện tại.'}</p></div> :
             <textarea className="plan-textarea" value={fileViewer.content} onChange={(e) => setFileViewer({ ...fileViewer, content: e.target.value })} spellCheck={false} rows={18} />}
           <div className="dialog-actions"><button className="button secondary" onClick={downloadWorkspaceFile} disabled={!fileViewer.exists}><Download size={16}/> Tải file</button><button className="button secondary" onClick={() => void deleteWorkspaceFile()} disabled={!fileViewer.exists || !!working}><RotateCcw size={16}/> Xóa file</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => setFileViewer(null)}>Đóng</button><button className="button primary" onClick={() => void saveWorkspaceFile()} disabled={!fileViewer.exists || !!working}><Check size={16}/> Lưu file TXT</button></div></div>
         </section></div>}

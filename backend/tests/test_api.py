@@ -54,10 +54,12 @@ class ApiTests(unittest.TestCase):
 
     def test_prompt_status_and_edit(self):
         self.create()
+        self.assertEqual(self.client.put('/api/prompt-templates/full',
+            json={'content': 'FULL {{title}} / {{hero}} / {{evidence}}'}).status_code, 200)
         item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
         base = f'/api/days/{self.date}/items/{item["uid"]}'
         prompt = self.client.get(base + '/prompt?mode=full').json()['text']
-        self.assertIn('Taglish', prompt)
+        self.assertTrue(prompt.startswith('FULL '))
         self.assertIn(item['title'], prompt)
         self.assertEqual(self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]['status'], 'ready')
         self.assertEqual(self.client.post(base+'/copied', json={'mode':'part1'}).json()['status'], 'part1')
@@ -78,10 +80,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.patch(base+'/brief', json=edits).status_code, 200)
         prompt = self.client.get(base+'/prompt?mode=full').json()['text']
         self.assertIn(edits['evidence'], prompt)
+        self.client.put('/api/prompt-templates/part2', json={'content': 'PART2 {{ending}}'})
         self.assertEqual(self.client.get(base+'/prompt?mode=part2').status_code, 200)
         self.assertEqual(self.client.post(base+'/scan', json=edits).status_code, 200)
         self.assertEqual(self.client.get(f'/api/days/{self.date}/scan').status_code, 200)
         self.assertEqual(self.client.patch(base+'/brief', json={**edits,'ending':'short'}).status_code, 422)
+
+    def test_idea_vault_metadata_persists_without_changing_brief_or_status(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        base = f'/api/days/{self.date}/items/{item["uid"]}'
+        response = self.client.patch(base + '/metadata', json={
+            'notes': 'Theo doi bang chung', 'favorite': True, 'draft': True,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        saved = response.json()['item']
+        self.assertEqual(saved['notes'], 'Theo doi bang chung')
+        self.assertTrue(saved['favorite'])
+        self.assertTrue(saved['draft'])
+        self.assertEqual(saved['status'], 'ready')
+        reloaded = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        self.assertEqual(reloaded['title'], item['title'])
+        self.assertEqual(reloaded['notes'], 'Theo doi bang chung')
+        self.assertTrue(reloaded['favorite'])
+        self.assertTrue(reloaded['draft'])
 
     def test_planning_parse_import_and_protect_lane(self):
         self.create()
@@ -132,6 +154,7 @@ class ApiTests(unittest.TestCase):
 
     def test_workspace_export_writes_full_prompts_without_changing_status(self):
         self.create()
+        self.client.put('/api/prompt-templates/full', json={'content': 'EXPORT {{title}} {{ending}}'})
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
         ):
@@ -142,14 +165,37 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(len(files), 14)
             self.assertTrue(files[0].name.endswith('_01.txt'))
             item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
-            self.assertEqual(files[0].read_text(encoding='utf-8'), item['full_prompt'])
+            self.assertEqual(files[0].read_text(encoding='utf-8'), f'EXPORT {item["title"]} {item["ending"]}')
             self.assertEqual(item['status'], 'ready')
             second = self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1})
             self.assertEqual(second.json()['written'], 0)
             self.assertEqual(second.json()['skipped'], 14)
 
+    def test_workspace_export_keeps_ai2_and_ai3_in_their_own_lanes(self):
+        self.create()
+        self.client.put('/api/prompt-templates/full', json={'content': 'AI {{title}}'})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            for ai in (2, 3):
+                response = self.client.post('/api/workspace/export', json={'date': self.date, 'ai': ai})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['written'], 14)
+                lane = Path(directory) / f'AI{ai}'
+                self.assertEqual(len(list(lane.glob(f'{self.date}_AI{ai}_??.txt'))), 14)
+                self.assertFalse(list((Path(directory) / f'AI{3 if ai == 2 else 2}').glob(
+                    f'{self.date}_AI{ai}_*.txt'
+                )))
+            for ai in (2, 3):
+                status = self.client.get('/api/workspace/status', params={
+                    'date': self.date, 'ai': ai
+                })
+                self.assertEqual(status.status_code, 200)
+                self.assertEqual([item['slot'] for item in status.json()['items']], list(range(1, 15)))
+
     def test_workspace_files_are_mapped_editable_and_deletable(self):
         self.create()
+        self.client.put('/api/prompt-templates/full', json={'content': 'EXPORT {{title}}'})
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
         ):
@@ -178,6 +224,7 @@ class ApiTests(unittest.TestCase):
 
     def test_missing_output_returns_status_not_server_error(self):
         self.create()
+        self.client.put('/api/prompt-templates/full', json={'content': 'EXPORT {{title}}'})
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
         ):
@@ -188,9 +235,47 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertFalse(response.json()['exists'])
 
+    def test_missing_prompt_before_export_returns_status_not_conflict(self):
+        self.create()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            response = self.client.get('/api/workspace/file', params={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'prompt'
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['exists'])
+
     def test_workspace_config_rejects_relative_path(self):
         response = self.client.put('/api/workspace/config', json={'folder': 'relative\\workspace'})
         self.assertEqual(response.status_code, 422)
+
+    def test_prompt_templates_are_empty_and_validate_render_preview(self):
+        self.assertEqual(self.client.get('/api/prompt-templates').json()['templates'],
+                         {'full': '', 'part1': '', 'part2': ''})
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        self.assertEqual(self.client.get(f'/api/days/{self.date}/items/{item["uid"]}/prompt').status_code, 409)
+        self.assertEqual(self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1}).status_code, 409)
+        saved = self.client.put('/api/prompt-templates/full', json={
+            'content': '{{title}}|{{title}}|{{hero}}'
+        })
+        self.assertEqual(saved.status_code, 200)
+        preview = self.client.post('/api/prompt-templates/preview', json={
+            'date': self.date, 'uid': item['uid'], 'mode': 'full',
+            'content': 'Preview {{ending}}'
+        })
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()['text'], f'Preview {item["ending"]}')
+        self.assertEqual(self.client.put('/api/prompt-templates/part1',
+            json={'content': 'P1 {{title}}'}).status_code, 200)
+        self.assertEqual(self.client.put('/api/prompt-templates/part2',
+            json={'content': 'P2 {{title}}'}).status_code, 200)
+        invalid = self.client.put('/api/prompt-templates/full',
+            json={'content': '{{unknown}}'})
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(self.client.delete('/api/prompt-templates/full').status_code, 200)
+        self.assertEqual(self.client.get(f'/api/days/{self.date}/items/{item["uid"]}/prompt').status_code, 409)
 
 
 class DatabaseMigrationTests(unittest.TestCase):

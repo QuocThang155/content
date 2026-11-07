@@ -203,7 +203,8 @@ def unique_candidates(item, candidates, limit=5):
 
 
 def default_db():
-    return {'version': 2, 'library': seed_bank(), 'days': {}, 'history': []}
+    return {'version': 2, 'library': seed_bank(), 'days': {}, 'history': [],
+            'prompt_templates': {'full': '', 'part1': '', 'part2': ''}}
 
 
 def normalized_db(raw):
@@ -216,6 +217,20 @@ def normalized_db(raw):
     if any(not isinstance(v, dict) or not isinstance(v.get('items'), list) for v in raw['days'].values()):
         raise ValueError('Cấu trúc ngày làm việc không hợp lệ.')
     raw.setdefault('history', [])
+    templates = raw.setdefault('prompt_templates', {})
+    if not isinstance(templates, dict):
+        raise ValueError('Cấu hình template prompt không hợp lệ.')
+    for mode in ('full', 'part1', 'part2'):
+        value = templates.setdefault(mode, '')
+        if not isinstance(value, str):
+            raise ValueError(f'Template {mode} phải là chuỗi.')
+    for day in raw['days'].values():
+        for item in day['items']:
+            item.setdefault('notes', '')
+            item.setdefault('favorite', False)
+            item.setdefault('draft', False)
+            if not isinstance(item['notes'], str) or not isinstance(item['favorite'], bool) or not isinstance(item['draft'], bool):
+                raise ValueError('Metadata brief không hợp lệ.')
     return raw
 
 
@@ -291,51 +306,29 @@ def new_day(db, for_date):
     return True, 'Đã tạo 42 thẻ ý tưởng, mỗi AI nhận 14 thẻ.'
 
 
-def story_prompt(item, mode='full'):
-    details = '\n'.join(f'- {label}: {item.get(key, "")}' for key, label in FIELDS)
-    part = {
-        'full': '''Write the COMPLETE story now: HOOK (20–30 uppercase words), PART 1 (~700 words),
-then PART 2 (~2300 words) in a SINGLE response. Aim for ~3000 words total.
-If a hard output limit prevents completion, stop at a clean paragraph boundary,
-and do not pretend the story is complete. The user will request continuation.''',
-        'part1': '''Write ONLY HOOK (20–30 uppercase words) and PART 1 (~700 words).
-End at a specific, tense event. Do not produce PART 2 yet.''',
-        'part2': '''Continue immediately from PART 1 earlier in THIS SAME CHAT.
-Write ONLY PART 2 (~2300 words), preserve all established facts,
-reveal the evidence, resolve every material conflict, and conclude fully.
-Do not repeat PART 1 or create a new HOOK.''',
-    }[mode]
-    return f'''You are an expert screenwriter of ORIGINAL, modern Philippine Taglish drama for Facebook readers.
-PROJECT STORY ID: {item.get('slot', '—'):02} | ASSIGNED AI: {item.get('ai', '—')} | THEME: {THEME_NAME.get(item.get('theme'), item.get('theme', ''))}
+PROMPT_MODES = ('full', 'part1', 'part2')
+PROMPT_VARIABLES = ('title', 'hero', 'antagonist', 'conflict', 'evidence', 'reversal', 'ending')
+PROMPT_VARIABLE_PATTERN = re.compile(r'\{\{([a-zA-Z0-9_]+)\}\}')
 
-STORY BRIEF — create a NEW plot from this outline; do not imitate a known source story:
-{details}
 
-MANDATORY STYLE AND STORY LOGIC:
-- Natural, conversational Filipino Taglish with Pinoy humor, playful banter from a protective best friend,
-  grounded family/community feeling, sharp pacing, and short paragraphs.
-- Start immediately with a clear injustice. The antagonist TAKES an observable unfair action.
-- Build scenes in chronological order; vary location and dialogue naturally.
-- Plant the evidence early, then use it in a justified, specific reversal; NEVER resolve by coincidence.
-- Preserve coherent motives, credible consequences, and the brief's key evidence-to-reversal logic.
-- Every spoken line ends cleanly; no trailing dialogue tags after the spoken line.
-- Use digits for money, ages, years, distances and significant quantities.
-- Keep narration concrete, concise, non-florid and fresh; avoid repetitive or recycled motifs.
-- Make this story distinct from other stories in the same daily batch in conflict, evidence, and reversal.
-- Facebook/YouTube safe: no graphic violence, sexual material, harassment or hateful text.
-- Do NOT include harmful cyber instructions, phishing, malware, account intrusion, personal identifiers,
-  usable credentials, phone numbers, addresses, real links or reproduced private documents.
-- NEVER use any of these Filipino expressions: {', '.join(BANNED_TOKENS)}.
-- Avoid graphic or body-based emotional metaphors, especially about body parts or internal organs.
-- Do not use suggestive physical intimacy or explicit adult themes.
+def validate_prompt_template(content: str) -> str:
+    if not isinstance(content, str):
+        raise ValueError('Template prompt phải là chuỗi.')
+    variables = sorted(set(PROMPT_VARIABLE_PATTERN.findall(content)))
+    invalid = [name for name in variables if name not in PROMPT_VARIABLES]
+    if invalid:
+        raise ValueError('Biến không hợp lệ: ' + ', '.join(f'{{{{{name}}}}}' for name in invalid))
+    return content
 
-PRIVATE QUALITY CHECK BEFORE OUTPUT: confirm continuity, clear proof, credible reversal,
-no missing major characters, appropriate Taglish, approximate word counts,
-no forbidden words/imagery, and a resolved ending. Correct issues silently.
 
-OUTPUT TASK:
-{part}
-Output ONLY the story in the requested format, no editorial notes.'''
+def render_prompt(item, mode: str, templates: dict[str, str]) -> str:
+    if mode not in PROMPT_MODES:
+        raise ValueError(f'Loại template không hợp lệ: {mode}.')
+    template = validate_prompt_template(templates.get(mode, ''))
+    if not template.strip():
+        raise ValueError(f'Chưa cấu hình template {mode}. Hãy mở Cài đặt Prompt để nhập và lưu template.')
+    values = {key: str(item.get(key, '')) for key in PROMPT_VARIABLES}
+    return PROMPT_VARIABLE_PATTERN.sub(lambda match: values[match.group(1)], template)
 
 
 def planning_prompt(db, date, ai):
@@ -391,4 +384,3 @@ def parse_planner(text, ai):
 
 def count_status(items):
     return {k: sum(s.get('status') == k for s in items) for k in STATUS_LABEL}
-

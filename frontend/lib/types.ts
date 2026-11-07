@@ -1,13 +1,14 @@
 export type Status = 'ready' | 'sent' | 'part1' | 'done';
 export type Mode = 'full' | 'part1' | 'part2';
-export type Tab = 'dashboard' | 'workflow' | 'planner' | 'history';
+export type Tab = 'dashboard' | 'vault' | 'workflow' | 'planner' | 'history' | 'prompt-settings';
 export type BriefFields = {
   title: string; hero: string; antagonist: string; conflict: string;
   evidence: string; reversal: string; ending: string;
 };
 export type Story = BriefFields & {
-  id: string; uid: string; slot: number; ai: 1 | 2 | 3;
+  id: string; uid: string; slot: number; lane_slot?: number; ai: 1 | 2 | 3;
   source: string; theme: string; status: Status; last_copied?: string; full_prompt?: string;
+  notes?: string; favorite?: boolean; draft?: boolean;
 };
 export type Stats = { total: number; done: number; in_progress: number; ready: number; sent: number; part1: number };
 export type Overview = {
@@ -27,4 +28,6 @@ export type WorkspaceItem = {
   prompt_exists: boolean; output_exists: boolean; prompt_hash: string | null;
   output_hash: string | null; warnings: string[];
 };
-export type WorkspaceFile = { content: string; filename: string; hash: string | null; uid: string; exists: boolean };
+export type WorkspaceFile = { content: string; filename: string; hash: string | null; uid: string; exists: boolean; warning?: string };
+export type PromptMode = 'full' | 'part1' | 'part2';
+export type PromptTemplates = Record<PromptMode, string>;

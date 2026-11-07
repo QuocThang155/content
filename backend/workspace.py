@@ -69,7 +69,18 @@ def _file_names(date: str, ai: int, slot: int) -> tuple[str, str]:
     return f'{prefix}.txt', f'{prefix}_output.txt'
 
 
+def _local_slot(ai: int, global_slot: int) -> int:
+    if ai not in (1, 2, 3) or not (1 <= global_slot <= 42):
+        raise ValueError('Lane hoặc slot không hợp lệ.')
+    local_slot = global_slot - ((ai - 1) * 14)
+    if not 1 <= local_slot <= 14:
+        raise ValueError('Slot không thuộc lane AI đã chọn.')
+    return local_slot
+
+
 def _validate_slot(items: Iterable[dict], ai: int, slot: int) -> dict:
+    if not 1 <= slot <= 14:
+        raise ValueError('Slot trong lane phải từ 01 đến 14.')
     item = next((candidate for candidate in items if candidate.get('slot') == (ai - 1) * 14 + slot), None)
     if item is None or item.get('ai') != ai or not item.get('uid'):
         raise ValueError('Không tìm thấy brief hợp lệ cho lane và slot đã chọn.')
@@ -144,12 +155,15 @@ def _write_text_safely(path: Path, content: str) -> None:
         raise
 
 
-def export_lane(date: str, ai: int, items: Iterable[dict]) -> dict[str, object]:
+def export_lane(date: str, ai: int, items: Iterable[dict], templates: dict[str, str]) -> dict[str, object]:
     lane = sorted(items, key=lambda item: item.get('slot', 0))
     expected_slots = set(range(1, 15))
-    local_slots = {item.get('slot', 0) - (ai - 1) * 14 for item in lane}
+    local_slots = {_local_slot(ai, item.get('slot', 0)) for item in lane}
     if len(lane) != 14 or local_slots != expected_slots:
         raise ValueError(f'AI {ai} phải có đúng 14 brief với slot duy nhất từ 01 đến 14.')
+    core.validate_prompt_template(templates.get('full', ''))
+    if not templates.get('full', '').strip():
+        raise ValueError('Chưa cấu hình template full. Hãy mở Cài đặt Prompt để nhập và lưu template.')
 
     root = _absolute_root()
     lane_dir = _safe_lane_dir(root, ai)
@@ -157,14 +171,14 @@ def export_lane(date: str, ai: int, items: Iterable[dict]) -> dict[str, object]:
     written = 0
     skipped = 0
     for item in lane:
-        local_slot = item['slot'] - (ai - 1) * 14
+        local_slot = _local_slot(ai, item['slot'])
         input_name, output_name = _file_names(date, ai, local_slot)
         input_path = lane_dir / input_name
         output_path = lane_dir / output_name
         if input_path.exists() or output_path.exists():
             skipped += 1
             continue
-        prompt = core.story_prompt(item, 'full')
+        prompt = core.render_prompt(item, 'full', templates)
         _write_text_safely(input_path, prompt)
         manifest[_record_key(date, ai, local_slot)] = {
             'date': date, 'ai': ai, 'slot': local_slot, 'uid': item['uid'],
@@ -204,11 +218,16 @@ def read_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'], 
     item = _validate_slot(items, ai, slot)
     records = _read_manifest(root)
     record = records.get(_record_key(date, ai, slot))
-    if not record or record.get('uid') != item['uid']:
-        raise ValueError('Không có metadata hợp lệ để ánh xạ file với brief.')
     input_name, output_name = _file_names(date, ai, slot)
     filename = input_name if kind == 'prompt' else output_name
     path = lane / filename
+    if not record:
+        if not path.exists():
+            return {'content': '', 'filename': filename, 'hash': None, 'uid': item['uid'],
+                    'exists': False, 'warning': 'File chưa được xuất; chưa có metadata ánh xạ.'}
+        raise ValueError('File tồn tại nhưng không có metadata hợp lệ để ánh xạ với brief.')
+    if record.get('uid') != item['uid']:
+        raise ValueError('UID trong metadata không còn khớp brief hiện tại.')
     if not path.is_file():
         return {'content': '', 'filename': filename, 'hash': None, 'uid': item['uid'], 'exists': False}
     content = path.read_text(encoding='utf-8')

@@ -1,7 +1,7 @@
 # Đặc tả yêu cầu phần mềm — THẮNG MIA
 
-**Phiên bản:** 3.1.0
-**Ngày cập nhật:** 07/11/2026  
+**Phiên bản:** 3.2.0
+**Ngày cập nhật:** 08/11/2026
 **Trạng thái:** Đặc tả theo mã nguồn hiện tại
 
 ## 1. Mục đích và phạm vi
@@ -12,8 +12,8 @@ truyện mỗi ngày cho ba phiên AI được người dùng vận hành thủ 
 AI, không tự động điều khiển website AI, không lưu truyện hoàn chỉnh và không
 đăng nội dung lên mạng xã hội.
 
-Giao diện người dùng bằng tiếng Việt. Prompt gửi cho AI được sinh bằng tiếng
-Anh và yêu cầu viết theo phong cách Philippine Taglish.
+Giao diện người dùng bằng tiếng Việt. Nội dung prompt viết truyện do người dùng
+tự cấu hình; hệ thống chỉ thay các biến brief được cho phép.
 
 ### 1.1. Định danh dự án
 | Thành phần | Tên chuẩn |
@@ -49,8 +49,8 @@ xóa hoặc ghi đè. Dữ liệu được đọc và
 ghi trong giao dịch SQLite `BEGIN IMMEDIATE` để tránh mất cập nhật khi có
 nhiều request đồng thời.
 
-Prompt Full có thể được xuất thành 14 file TXT cho từng lane qua nút **Xuất
-14 TXT** trong Workflow. Workspace dùng biến môi trường
+Prompt Full do template người dùng cấu hình có thể được xuất thành 14 file TXT
+cho từng lane qua nút **Xuất 14 TXT** trong Workflow. Workspace dùng biến môi trường
 `THANGMIA_WORKSPACE_DIR`, mặc định `~/.thangmia/workspace/`, với ba thư mục
 `AI1`, `AI2` và `AI3`. File dùng tên `YYYY-MM-DD_AIn_NN.txt`; file input hoặc
 `_output.txt` đã tồn tại sẽ được bỏ qua và không thay đổi trạng thái nghiệp vụ.
@@ -231,6 +231,33 @@ và đổi tên atomic. Chỉ file `.txt` thuộc workspace và có mapping hợ
 được đọc, ghi hoặc xóa. Việc phát hiện output không tự chuyển trạng thái
 `ready`, `sent`, `part1` hoặc `done`.
 
+### 4.8. Cài đặt Prompt Template
+
+Menu **Cài đặt Prompt** lưu độc lập ba template `Full`, `Part 1` và `Part 2`
+trong tài liệu JSON của SQLite. Template mới mặc định là chuỗi rỗng; dữ liệu
+database cũ không được dùng để tự tạo hoặc import prompt. Chỉ bảy biến
+`{{title}}`, `{{hero}}`, `{{antagonist}}`, `{{conflict}}`, `{{evidence}}`,
+`{{reversal}}` và `{{ending}}` được chấp nhận, có thể lặp lại nhiều lần. Biến
+khác bị từ chối, không có `eval()` hay thực thi nội dung template.
+
+Người dùng có thể nhập, lưu, xem trước sau khi thay biến, hủy thay đổi và xóa
+từng template. Khi template tương ứng chưa cấu hình, API prompt và xuất TXT
+trả lỗi rõ ràng; trạng thái brief không thay đổi. Backup/restore JSON giữ
+trường `prompt_templates`; backup cũ không có trường này được coi là ba mẫu
+trống.
+
+### 4.9. Kho ý tưởng
+
+Menu **Kho ý tưởng** hiển thị tối đa 42 brief của ngày đang chọn, chia thành
+ba lane AI với tối đa 14 brief mỗi lane. Người dùng có thể tìm kiếm trong bảy
+trường brief, lọc theo trạng thái, sắp xếp theo vị trí/tiêu đề/trạng thái,
+xem đầy đủ nội dung và mở trình chỉnh sửa brief hiện có. Ghi chú riêng, cờ
+yêu thích và bản nháp được lưu cùng item trong SQLite; không tạo bản sao brief.
+Các item liên kết với Workflow bằng `uid`.
+
+Khi workspace đã có prompt hoặc output cho brief, giao diện cảnh báo trước khi
+chỉnh sửa. Việc sửa brief không tự xóa, ghi đè hoặc thay đổi file TXT/output.
+
 ## 5. Đặc tả API
 
 Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệu tại
@@ -239,10 +266,14 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | Phương thức | Endpoint | Mô tả |
 |---|---|---|
 | GET | `/api/health` | Kiểm tra backend |
-| GET | `/api/overview?date=YYYY-MM-DD` | Lấy thẻ, prompt đầy đủ và thống kê của ngày |
+| GET | `/api/overview?date=YYYY-MM-DD` | Lấy thẻ và thống kê của ngày; prompt được lấy riêng sau khi template đã cấu hình |
 | POST | `/api/days` | Tạo ngày và phân bổ 42 brief |
 | GET | `/api/history` | Lấy lịch sử các ngày |
 | GET | `/api/days/{date}/items/{uid}/prompt?mode=...` | Sinh prompt `full`, `part1` hoặc `part2` |
+| GET | `/api/prompt-templates` | Lấy ba template và danh sách biến hợp lệ |
+| PUT | `/api/prompt-templates/{mode}` | Lưu một template |
+| DELETE | `/api/prompt-templates/{mode}` | Xóa một template |
+| POST | `/api/prompt-templates/preview` | Xem trước template sau khi thay biến |
 | POST | `/api/days/{date}/items/{uid}/copied` | Ghi nhận sao chép thành công |
 | POST | `/api/days/{date}/items/{uid}/undo-copied` | Hoàn tác sao chép, đưa về `ready` |
 | POST | `/api/days/{date}/items/{uid}/toggle-done` | Đổi qua lại giữa `done` và `sent` |
@@ -289,7 +320,7 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 
 1. Tạo hai ngày liên tiếp không tái sử dụng starter brief.
 2. Mỗi ngày có 42 thẻ, gồm 14 thẻ cho mỗi AI và 3 thẻ mỗi nhóm chủ đề.
-3. Prompt Full, Part 1 và Part 2 chứa đúng hướng dẫn Taglish.
+3. Ba template mới mặc định trống và không nạp prompt cũ.
 4. Sao chép thành công cập nhật trạng thái; sao chép thất bại không cập nhật.
 5. Nhấn **Sao chép tiếp** không reload trang và cập nhật đúng bộ đếm.
 6. **Hoàn tác sao chép** chuyển `sent`/`part1` về `ready`, giảm thống kê và
@@ -307,7 +338,7 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 16. `npm run lint`, `npm run typecheck`, `npm run build` và bộ test API backend
     chạy thành công.
 
-## 8. Ngoài phạm vi phiên bản 3.1.0
+## 8. Ngoài phạm vi phiên bản 3.2.0
 
 - Tài khoản người dùng và phân quyền.
 - Hosting công khai và đồng bộ realtime.

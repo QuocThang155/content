@@ -3,7 +3,7 @@
 
 **Version 3.0.0 — web migration of the original offline studio**
 
-THẮNG MIA is a **browser-based, locally hosted** production desk for 42 short story briefs per day, shared across three human-operated AI web sessions. It does **not** call paid AI APIs, automate AI websites, store finished stories, or publish to Facebook. UI language: Vietnamese. Story-writing prompts: English, requesting Philippine Taglish.
+THẮNG MIA is a **browser-based, locally hosted** production desk for 42 story briefs per day, shared across three human-operated AI web sessions. It does **not** call paid AI APIs, automate AI websites, store finished stories, or publish to Facebook. UI language: Vietnamese. Story-writing prompts are entered and maintained by the user.
 
 ## Technology
 
@@ -65,6 +65,12 @@ Then open http://localhost:3000. SQLite persists in the existing `story42_data` 
 
 The web app stores its own data under `~/.thangmia/thangmia.sqlite3` by default. If the legacy web database `~/.story42_web/story42.sqlite3` exists, the backend backs it up and copies it to the new path only when the new database does not exist. The legacy database and desktop JSON file are never deleted or overwritten.
 
+Before copying or exporting story prompts, open **Cài đặt Prompt** and save the
+user-authored Full, Part 1, and/or Part 2 template. The three templates start
+empty; there is no built-in story prompt fallback. Supported substitutions are
+`{{title}}`, `{{hero}}`, `{{antagonist}}`, `{{conflict}}`, `{{evidence}}`,
+`{{reversal}}`, and `{{ending}}`.
+
 To export Full prompts for a lane, set `THANGMIA_WORKSPACE_DIR` (default:
 `~/.thangmia/workspace/`) to the directory shared with the Chrome Extension,
 then click **Xuất 14 TXT** in Workflow. Files are written under `AI1`, `AI2`,
@@ -88,9 +94,11 @@ and are not assigned automatically.
 
 ## User workflow
 
-1. **Trang chủ:** choose date, examine 42 cards, review duplication warnings, copy next available prompt per AI, and mark each story complete manually. Edit a brief and copy the Full / Part 1 / Part 2 prompts as needed.
-2. **Bổ sung ý tưởng:** select AI 1/2/3, copy the prompt that requests 14 new briefs; paste the 14 generated lines into THẮNG MIA and import. Ready-only lanes can be replaced after confirmation; a lane containing any sent / part1 / done brief is protected.
-3. **Lịch sử & sao lưu:** view daily counts, download JSON backup, and restore JSON. Dashboard also shows remaining ideas and can filter them.
+1. **Cài đặt Prompt:** enter and save independent Full / Part 1 / Part 2 templates, preview them with a selected brief, or delete a template.
+2. **Kho ý tưởng:** browse the selected day's 42 briefs across three AI lanes, search and sort all seven fields, edit briefs, and save notes/favorites/draft markers.
+3. **Trang chủ:** choose date, examine production progress, review duplication warnings, copy next available prompt per AI, and mark each story complete manually.
+4. **Bổ sung ý tưởng:** select AI 1/2/3, copy the prompt that requests 14 new briefs; paste the 14 generated lines into THẮNG MIA and import. Ready-only lanes can be replaced after confirmation; a lane containing any sent / part1 / done brief is protected.
+5. **Lịch sử & sao lưu:** view daily counts, download JSON backup, and restore JSON. Dashboard also shows remaining ideas and can filter them.
 
 The web app records a copy as `sent` or `part1` **only after the browser clipboard operation succeeds**. Clipboard permissions require localhost or HTTPS on most browsers.
 
@@ -99,7 +107,7 @@ The web app records a copy as `sent` or `part1` **only after the browser clipboa
 - Running on the web **does not mean automatic cloud hosting**. This bundle runs locally in a web browser. To make it publicly accessible, first add authentication, role-based access, HTTPS, a deployment plan and proper backup policy; **do not expose this unauthenticated instance directly to the internet**.
 - There is one project/database, not separate user accounts. Edits from concurrent browser clients are serialized in SQLite, but there are no per-user permissions or real-time collaboration updates.
 - The near-duplicate detector uses weighted Jaccard keyword overlap. It is **not semantic similarity, copyright, or plagiarism detection**.
-- THẮNG MIA does not inspect finished 3,000-word stories. Actual AI service limits, output length, and story quality are not guaranteed.
+- THẮNG MIA does not inspect finished stories. Actual AI service limits, output length, and story quality are not guaranteed.
 - Python 3.10+ for backend; contrary to the original desktop project, web dependencies now require `pip install` and `npm install` during setup.
 
 ## Tests
@@ -126,7 +134,7 @@ Original desktop project is preserved under `legacy/Story42.py`; original SRS is
 ```text
 thangmia/
 ├── backend/
-│   ├── core.py               # Reused business rules (84 seed, 42 assignment, Taglish prompts)
+│   ├── core.py               # Business rules, 84 seed ideas, 42-item assignment, template rendering
 │   ├── main.py               # FastAPI routes and validation
 │   ├── store.py              # SQLite persistence and transactions
 │   ├── requirements.txt

@@ -115,6 +115,12 @@ class BriefEdit(BaseModel):
     ending: str = Field(min_length=7, max_length=2000)
 
 
+class BriefMetadata(BaseModel):
+    notes: str = Field(default='', max_length=10000)
+    favorite: bool = False
+    draft: bool = False
+
+
 class ImportPlan(BaseModel):
     ai: Literal[1, 2, 3]
     text: str = Field(min_length=1, max_length=100000)
@@ -140,6 +146,17 @@ class WorkspaceFile(BaseModel):
     expected_hash: str | None = None
 
 
+class PromptTemplateBody(BaseModel):
+    content: str = Field(max_length=200000)
+
+
+class PromptPreview(BaseModel):
+    date: str
+    uid: str
+    mode: Literal['full', 'part1', 'part2']
+    content: str | None = Field(default=None, max_length=200000)
+
+
 def create_app(store: Store | None = None) -> FastAPI:
     database = store or Store(DEFAULT_PATH)
     app = FastAPI(title='thangmia API', version='3.0.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
@@ -154,9 +171,12 @@ def create_app(store: Store | None = None) -> FastAPI:
         db = database.read()
         day = db['days'].get(date)
         items = day['items'] if day else []
+        public_items = [{**item, 'full_prompt': None,
+                         'lane_slot': item['slot'] - ((item['ai'] - 1) * 14)}
+                        for item in items]
         used_starters = len(core.used_starter_ids(db))
         return {'date': date, 'exists': day is not None,
-                'items': [{**item, 'full_prompt': core.story_prompt(item, 'full')} for item in items],
+                'items': public_items,
                 'stats': metrics(items),
                 'theme_names': core.THEME_NAME, 'library_size': len(db['library']),
                 'ideas_remaining': remaining_ideas(db),
@@ -194,7 +214,8 @@ def create_app(store: Store | None = None) -> FastAPI:
         if day is None:
             raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
         try:
-            return export_lane(date, body.ai, (item for item in day['items'] if item.get('ai') == body.ai))
+            return export_lane(date, body.ai, (item for item in day['items'] if item.get('ai') == body.ai),
+                               db.get('prompt_templates', {}))
         except (OSError, ValueError) as exc:
             raise HTTPException(409, f'Không thể xuất file TXT: {exc}') from exc
 
@@ -225,6 +246,46 @@ def create_app(store: Store | None = None) -> FastAPI:
             return {'date': date, 'ai': ai, 'items': lane_status(date, ai, day['items'])}
         except (OSError, ValueError) as exc:
             raise HTTPException(409, f'Không thể đọc workspace: {exc}') from exc
+
+    @app.get('/api/prompt-templates')
+    def get_prompt_templates():
+        db = database.read()
+        return {'templates': db.get('prompt_templates', {'full': '', 'part1': '', 'part2': ''}),
+                'variables': list(core.PROMPT_VARIABLES),
+                'modes': list(core.PROMPT_MODES)}
+
+    @app.put('/api/prompt-templates/{mode}')
+    def save_prompt_template(mode: Literal['full', 'part1', 'part2'], body: PromptTemplateBody):
+        try:
+            content = core.validate_prompt_template(body.content)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with database.edit() as db:
+            db.setdefault('prompt_templates', {})[mode] = content
+        return {'mode': mode, 'content': content}
+
+    @app.delete('/api/prompt-templates/{mode}')
+    def delete_prompt_template(mode: Literal['full', 'part1', 'part2']):
+        with database.edit() as db:
+            db.setdefault('prompt_templates', {})[mode] = ''
+        return {'mode': mode, 'content': ''}
+
+    @app.post('/api/prompt-templates/preview')
+    def preview_prompt(body: PromptPreview):
+        valid_date(body.date)
+        db = database.read()
+        item = get_item(db, body.date, body.uid)
+        templates = dict(db.get('prompt_templates', {}))
+        if body.content is not None:
+            try:
+                templates[body.mode] = core.validate_prompt_template(body.content)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        try:
+            text = core.render_prompt(item, body.mode, templates)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {'text': text, 'mode': body.mode, 'uid': body.uid}
 
     @app.get('/api/workspace/file')
     def workspace_file(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
@@ -279,8 +340,13 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get('/api/days/{date}/items/{uid}/prompt')
     def prompt(date: str, uid: str, mode: Literal['full', 'part1', 'part2'] = 'full'):
         valid_date(date)
-        item = get_item(database.read(), date, uid)
-        return {'text': core.story_prompt(item, mode), 'title': item.get('title'), 'ai': item['ai'], 'uid': uid}
+        db = database.read()
+        item = get_item(db, date, uid)
+        try:
+            text = core.render_prompt(item, mode, db.get('prompt_templates', {}))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {'text': text, 'title': item.get('title'), 'ai': item['ai'], 'uid': uid}
 
     @app.post('/api/days/{date}/items/{uid}/copied')
     def copied(date: str, uid: str, body: Copied):
@@ -328,6 +394,15 @@ def create_app(store: Store | None = None) -> FastAPI:
             item = get_item(db, date, uid)
             item.update(edits)
         return {'message': 'Đã lưu nội dung thẻ.', 'item': item}
+
+    @app.patch('/api/days/{date}/items/{uid}/metadata')
+    def edit_metadata(date: str, uid: str, body: BriefMetadata):
+        valid_date(date)
+        with database.edit() as db:
+            item = get_item(db, date, uid)
+            item.update({key: value.strip() if isinstance(value, str) else value
+                         for key, value in body.model_dump().items()})
+            return {'message': 'Đã lưu metadata brief.', 'item': item}
 
     @app.get('/api/days/{date}/scan')
     def scan_day(date: str, threshold: float = Query(.28, ge=.0, le=1.0)):
