@@ -20,3 +20,11 @@ export type HistoryData = { days: HistoryDay[]; library_size: number; starter_us
 export type Pair = { score: number; first: { slot: number; title: string }; second: { slot: number; title: string } };
 export type Duplicate = { score: number; title: string; slot?: number };
 export type PlanConflict = { code?: string; message?: string; alerts?: { line: number; score: number; title: string; other_title: string }[] };
+export type WorkspaceLane = { path: string; exists: boolean; readable: boolean; writable: boolean };
+export type WorkspaceConfig = { folder: string; exists: boolean; readable: boolean; writable: boolean; lanes: Record<string, WorkspaceLane> };
+export type WorkspaceItem = {
+  slot: number; uid: string; prompt_filename: string; output_filename: string;
+  prompt_exists: boolean; output_exists: boolean; prompt_hash: string | null;
+  output_hash: string | null; warnings: string[];
+};
+export type WorkspaceFile = { content: string; filename: string; hash: string | null; uid: string; exists: boolean };

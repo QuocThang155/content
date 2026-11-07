@@ -1,6 +1,6 @@
 # Đặc tả yêu cầu phần mềm — THẮNG MIA
 
-**Phiên bản:** 3.0.0  
+**Phiên bản:** 3.1.0
 **Ngày cập nhật:** 07/11/2026  
 **Trạng thái:** Đặc tả theo mã nguồn hiện tại
 
@@ -48,6 +48,25 @@ sao lưu rồi tự động sao chép dữ liệu sang đường dẫn mới; da
 xóa hoặc ghi đè. Dữ liệu được đọc và
 ghi trong giao dịch SQLite `BEGIN IMMEDIATE` để tránh mất cập nhật khi có
 nhiều request đồng thời.
+
+Prompt Full có thể được xuất thành 14 file TXT cho từng lane qua nút **Xuất
+14 TXT** trong Workflow. Workspace dùng biến môi trường
+`THANGMIA_WORKSPACE_DIR`, mặc định `~/.thangmia/workspace/`, với ba thư mục
+`AI1`, `AI2` và `AI3`. File dùng tên `YYYY-MM-DD_AIn_NN.txt`; file input hoặc
+`_output.txt` đã tồn tại sẽ được bỏ qua và không thay đổi trạng thái nghiệp vụ.
+Khi chạy Docker, workspace trên host phải được mount vào backend và trỏ cùng
+thư mục mà Chrome Extension chọn.
+
+Trên Windows, có thể cấu hình workspace cố định bằng đường dẫn tuyệt đối, ví
+dụ `D:\thang\workspace`. Cấu hình hiện tại của môi trường Windows dùng đường
+dẫn này; dữ liệu workspace cũ không bị xóa khi chuyển vị trí. Backend tạo và
+kiểm tra quyền đọc/ghi các thư mục `AI1`, `AI2` và `AI3` trước khi sử dụng.
+
+Mỗi lần xuất prompt, backend lưu manifest
+`.thangmia_manifest.json` trong workspace. Manifest ánh xạ ngày, lane, slot,
+`uid`, tên file prompt, tên file output, hash prompt, phiên bản prompt và hash
+output. File không có mapping hợp lệ hoặc có `uid` không khớp không được tự
+động gán cho brief.
 
 ## 3. Mô hình dữ liệu và quy tắc phân bổ
 
@@ -194,6 +213,24 @@ Tab **Lịch sử & sao lưu** hỗ trợ:
 JSON v2 tương thích hai chiều với dữ liệu desktop thangmia cũ. File desktop gốc
 không bị ghi đè khi nhập vào web.
 
+### 4.7. Quản lý prompt TXT và kết quả Gemini
+
+Trong Workflow, mỗi brief có thể mở hai nội dung riêng:
+
+- **Prompt:** nội dung đầy đủ của file prompt `.txt`;
+- **Truyện trả về:** nội dung nguyên văn của file `_output.txt` do Extension
+  tạo.
+
+Nếu output chưa tồn tại, giao diện hiển thị **Chưa có kết quả**. Người dùng
+có thể làm mới trạng thái file, xem, chỉnh sửa, tải xuống hoặc xóa file với
+xác nhận. Việc sửa/xóa file chỉ tác động đến workspace, không xóa hoặc sửa
+brief trong SQLite.
+
+Backend kiểm tra xung đột bằng hash trước khi lưu. File được ghi qua file tạm
+và đổi tên atomic. Chỉ file `.txt` thuộc workspace và có mapping hợp lệ mới
+được đọc, ghi hoặc xóa. Việc phát hiện output không tự chuyển trạng thái
+`ready`, `sent`, `part1` hoặc `done`.
+
 ## 5. Đặc tả API
 
 Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệu tại
@@ -216,6 +253,13 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | POST | `/api/days/{date}/plan` | Nhập một batch 14 brief |
 | GET | `/api/backup` | Tải JSON schema v2 |
 | POST | `/api/restore` | Kiểm tra và thay thế dữ liệu bằng JSON schema v2 |
+| POST | `/api/workspace/export` | Xuất 14 prompt Full thành TXT cho một lane |
+| GET | `/api/workspace/config` | Xem workspace và quyền đọc/ghi |
+| PUT | `/api/workspace/config` | Xác nhận workspace tuyệt đối mới |
+| GET | `/api/workspace/status?date=...&ai=...` | Kiểm tra prompt/output theo 14 slot |
+| GET | `/api/workspace/file?date=...&ai=...&slot=...&kind=...` | Đọc prompt hoặc output |
+| PUT | `/api/workspace/file` | Sửa và lưu prompt/output có kiểm tra hash |
+| DELETE | `/api/workspace/file?date=...&ai=...&slot=...&kind=...` | Xóa prompt/output |
 
 Ngày phải có định dạng `YYYY-MM-DD` hợp lệ. API dùng mã lỗi `422` cho dữ liệu
 không hợp lệ, `404` khi không tìm thấy ngày hoặc thẻ, `409` cho xung đột
@@ -234,6 +278,10 @@ trạng thái hoặc thao tác ghi đè bị chặn.
   tuần tự hóa nhưng giao diện phải tải lại dữ liệu để thấy thay đổi từ client
   khác.
 - Ứng dụng không lưu toàn văn truyện hoàn chỉnh.
+- Prompt và output TXT được lưu ngoài SQLite trong workspace cục bộ; workspace
+  phải được đưa ra ngoài GitHub và không được commit vào repository.
+- Backend không tự động gọi Gemini hoặc kiểm tra độ dài truyện; Extension
+  tiếp tục là thành phần đọc prompt và tạo output.
 - Chất lượng, độ dài và giới hạn trả lời của dịch vụ AI bên ngoài không thuộc
   phạm vi kiểm soát của THẮNG MIA.
 
@@ -252,10 +300,14 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 9. Nhập batch thiếu dòng, lane đã giao hoặc dữ liệu sai định dạng bị từ chối.
 10. Cảnh báo trùng từ khóa yêu cầu xác nhận trước khi nhập.
 11. Sao lưu/khôi phục giữ nguyên ngày, brief và trạng thái.
-12. `npm run lint`, `npm run typecheck`, `npm run build` và bộ test API backend
+12. Xuất prompt tạo đủ 14 file đúng lane, đúng slot và không ghi đè file đã có.
+13. Web đọc đúng output theo manifest; output thiếu hiển thị **Chưa có kết quả**.
+14. Sửa/xóa TXT không thay đổi brief hoặc trạng thái trong SQLite.
+15. Workspace tương đối, symbolic link hoặc file không có mapping hợp lệ bị từ chối.
+16. `npm run lint`, `npm run typecheck`, `npm run build` và bộ test API backend
     chạy thành công.
 
-## 8. Ngoài phạm vi phiên bản 3.0.0
+## 8. Ngoài phạm vi phiên bản 3.1.0
 
 - Tài khoản người dùng và phân quyền.
 - Hosting công khai và đồng bộ realtime.
@@ -263,3 +315,4 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 - Tự động đăng Facebook.
 - Phân tích ngữ nghĩa hoặc kiểm tra đạo văn.
 - Nhập, lưu trữ hoặc xử lý truyện hoàn chỉnh.
+- Sửa đổi hoặc triển khai Chrome Extension.

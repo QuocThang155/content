@@ -130,6 +130,68 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/overview',params={'date':self.date}).json()['stats'],before['stats'])
         self.assertEqual(self.client.get('/api/health').json()['ok'], True)
 
+    def test_workspace_export_writes_full_prompts_without_changing_status(self):
+        self.create()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            response = self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['written'], 14)
+            files = sorted((Path(directory) / 'AI1').glob('*.txt'))
+            self.assertEqual(len(files), 14)
+            self.assertTrue(files[0].name.endswith('_01.txt'))
+            item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+            self.assertEqual(files[0].read_text(encoding='utf-8'), item['full_prompt'])
+            self.assertEqual(item['status'], 'ready')
+            second = self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1})
+            self.assertEqual(second.json()['written'], 0)
+            self.assertEqual(second.json()['skipped'], 14)
+
+    def test_workspace_files_are_mapped_editable_and_deletable(self):
+        self.create()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            self.assertEqual(self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1}).status_code, 200)
+            status = self.client.get('/api/workspace/status', params={'date': self.date, 'ai': 1}).json()
+            first = status['items'][0]
+            self.assertTrue(first['prompt_exists'])
+            prompt = self.client.get('/api/workspace/file', params={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'prompt'
+            }).json()
+            changed = prompt['content'] + '\nEdited'
+            saved = self.client.put('/api/workspace/file', json={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'prompt',
+                'content': changed, 'expected_hash': prompt['hash'],
+            })
+            self.assertEqual(saved.status_code, 200, saved.text)
+            conflict = self.client.put('/api/workspace/file', json={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'prompt',
+                'content': 'stale', 'expected_hash': prompt['hash'],
+            })
+            self.assertEqual(conflict.status_code, 409)
+            self.assertEqual(self.client.delete('/api/workspace/file', params={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'prompt'
+            }).status_code, 200)
+            self.assertEqual(self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]['status'], 'ready')
+
+    def test_missing_output_returns_status_not_server_error(self):
+        self.create()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            self.assertEqual(self.client.post('/api/workspace/export', json={'date': self.date, 'ai': 1}).status_code, 200)
+            response = self.client.get('/api/workspace/file', params={
+                'date': self.date, 'ai': 1, 'slot': 1, 'kind': 'output'
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.json()['exists'])
+
+    def test_workspace_config_rejects_relative_path(self):
+        response = self.client.put('/api/workspace/config', json={'folder': 'relative\\workspace'})
+        self.assertEqual(response.status_code, 422)
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_legacy_database_is_backed_up_and_copied_without_overwrite(self):

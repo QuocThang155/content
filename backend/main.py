@@ -12,6 +12,9 @@ from pydantic import BaseModel, Field
 
 from . import core
 from .store import DEFAULT_DATABASE_PATH, Store
+from .workspace import (
+    check_workspace, delete_file, export_lane, lane_status, read_file, set_workspace, write_file,
+)
 
 DEFAULT_PATH = Path(os.environ.get('THANGMIA_DB_PATH', str(DEFAULT_DATABASE_PATH))).expanduser()
 
@@ -119,6 +122,24 @@ class ImportPlan(BaseModel):
     replace_ready: bool = False
 
 
+class WorkspaceExport(BaseModel):
+    date: str
+    ai: Literal[1, 2, 3]
+
+
+class WorkspaceConfig(BaseModel):
+    folder: str
+
+
+class WorkspaceFile(BaseModel):
+    date: str
+    ai: Literal[1, 2, 3]
+    slot: int = Field(ge=1, le=14)
+    kind: Literal['prompt', 'output']
+    content: str
+    expected_hash: str | None = None
+
+
 def create_app(store: Store | None = None) -> FastAPI:
     database = store or Store(DEFAULT_PATH)
     app = FastAPI(title='thangmia API', version='3.0.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
@@ -164,6 +185,96 @@ def create_app(store: Store | None = None) -> FastAPI:
                            'done': sum(x.get('status') == 'done' for x in items)})
         return {'days': result, 'library_size': len(db['library']),
                 'starter_used': len(core.used_starter_ids(db)), 'starter_total': 84}
+
+    @app.post('/api/workspace/export')
+    def export_workspace(body: WorkspaceExport):
+        date = valid_date(body.date)
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return export_lane(date, body.ai, (item for item in day['items'] if item.get('ai') == body.ai))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f'Không thể xuất file TXT: {exc}') from exc
+
+    @app.get('/api/workspace/config')
+    def get_workspace_config():
+        try:
+            return check_workspace()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f'Workspace không hợp lệ: {exc}') from exc
+
+    @app.put('/api/workspace/config')
+    def update_workspace_config(body: WorkspaceConfig):
+        try:
+            return set_workspace(body.folder)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, f'Không thể cấu hình workspace: {exc}') from exc
+
+    @app.get('/api/workspace/status')
+    def workspace_status(date: str = Query(...), ai: int = Query(..., ge=1, le=3)):
+        valid_date(date)
+        if ai not in (1, 2, 3):
+            raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return {'date': date, 'ai': ai, 'items': lane_status(date, ai, day['items'])}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f'Không thể đọc workspace: {exc}') from exc
+
+    @app.get('/api/workspace/file')
+    def workspace_file(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
+                       slot: int = Query(..., ge=1, le=14),
+                       kind: Literal['prompt', 'output'] = Query(...)):
+        valid_date(date)
+        if ai not in (1, 2, 3):
+            raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return read_file(date, ai, slot, kind, day['items'])
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.put('/api/workspace/file')
+    def update_workspace_file(body: WorkspaceFile):
+        valid_date(body.date)
+        db = database.read()
+        day = db['days'].get(body.date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return write_file(body.date, body.ai, body.slot, body.kind, body.content, body.expected_hash, day['items'])
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete('/api/workspace/file')
+    def remove_workspace_file(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
+                              slot: int = Query(..., ge=1, le=14),
+                              kind: Literal['prompt', 'output'] = Query(...)):
+        valid_date(date)
+        if ai not in (1, 2, 3):
+            raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return delete_file(date, ai, slot, kind, day['items'])
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get('/api/days/{date}/items/{uid}/prompt')
     def prompt(date: str, uid: str, mode: Literal['full', 'part1', 'part2'] = 'full'):

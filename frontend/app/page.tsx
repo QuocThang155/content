@@ -9,7 +9,10 @@ import {
   ShieldCheck, Sparkles, WandSparkles, X, Zap,
 } from 'lucide-react';
 import { api, ApiError, copyClipboard, download } from '@/lib/api';
-import type { BriefFields, Duplicate, HistoryData, Mode, Overview, Pair, PlanConflict, Story, Tab } from '@/lib/types';
+import type {
+  BriefFields, Duplicate, HistoryData, Mode, Overview, Pair, PlanConflict, Story, Tab,
+  WorkspaceConfig, WorkspaceFile, WorkspaceItem,
+} from '@/lib/types';
 
 const FIELD_LABELS: { key: keyof BriefFields; label: string; placeholder: string }[] = [
   { key: 'title', label: 'Tiêu đề', placeholder: 'Tên truyện' },
@@ -79,6 +82,13 @@ export default function ThangMiaPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [laneCursors, setLaneCursors] = useState<Record<1 | 2 | 3, number>>({ 1: 0, 2: 0, 3: 0 });
   const [laneViewAll, setLaneViewAll] = useState<Record<1 | 2 | 3, boolean>>({ 1: false, 2: false, 3: false });
+  const [workspaceStatus, setWorkspaceStatus] = useState<Record<number, WorkspaceItem[]>>({});
+  const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configFolder, setConfigFolder] = useState('');
+  const [fileViewer, setFileViewer] = useState<{
+    item: Story; kind: 'prompt' | 'output'; content: string; hash: string | null; filename: string; exists: boolean;
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   function toast(text: string, type: Notice['type'] = 'success') { setNotice({ text, type }); }
@@ -118,6 +128,23 @@ export default function ThangMiaPage() {
     try { setHistory(await api<HistoryData>('/history')); }
     catch (err) { toast(messageOf(err), 'error'); }
   }, []);
+  const refreshWorkspace = useCallback(async () => {
+    if (!overview.exists || tab !== 'workflow') return;
+    try {
+      const statuses = await Promise.all(([1, 2, 3] as const).map((ai) =>
+        api<{ items: WorkspaceItem[] }>(`/workspace/status?date=${date}&ai=${ai}`)));
+      setWorkspaceStatus(Object.fromEntries(statuses.map((status, index) => [index + 1, status.items])));
+    } catch (err) { toast(messageOf(err), 'error'); }
+  }, [date, overview.exists, tab]);
+  // Workspace status is intentionally polled only while Workflow is open.
+  useEffect(() => {
+    if (tab !== 'workflow' || !overview.exists) return;
+    // Polling synchronizes external workspace files while Workflow is open.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshWorkspace();
+    const timer = window.setInterval(() => void refreshWorkspace(), 5000);
+    return () => window.clearInterval(timer);
+  }, [overview.exists, refreshWorkspace, tab]);
   // This effect loads history when its tab becomes active.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (tab === 'history') void refreshHistory(); }, [tab, refreshHistory]);
@@ -240,6 +267,89 @@ export default function ThangMiaPage() {
       await copyClipboard(r.text);
       toast(`Đã sao chép lệnh tạo 14 brief cho AI ${plannerAi}.`);
     });
+  }
+  async function exportLane(ai: 1 | 2 | 3) {
+    await execute(`export-${ai}`, async () => {
+      const result = await api<{ written: number; skipped: number; folder: string }>('/workspace/export',
+        { method: 'POST', body: JSON.stringify({ date, ai }) });
+      await refreshWorkspace();
+      toast(`AI ${ai}: đã ghi ${result.written} file, bỏ qua ${result.skipped} file đã tồn tại.`);
+    });
+  }
+  async function openWorkspaceConfig() {
+    await execute('workspace-config-read', async () => {
+      const result = await api<WorkspaceConfig>('/workspace/config');
+      setWorkspaceConfig(result);
+      setConfigFolder(result.folder);
+      setConfigOpen(true);
+    });
+  }
+  async function saveWorkspaceConfig() {
+    await execute('workspace-config-save', async () => {
+      const result = await api<WorkspaceConfig>('/workspace/config', {
+        method: 'PUT', body: JSON.stringify({ folder: configFolder }),
+      });
+      setWorkspaceConfig(result);
+      setConfigFolder(result.folder);
+      setConfigOpen(false);
+      setWorkspaceStatus({});
+      await refreshWorkspace();
+      toast(`Đã đổi workspace: ${result.folder}`);
+    });
+  }
+  async function openWorkspaceFile(item: Story, kind: 'prompt' | 'output') {
+    const status = workspaceStatus[item.ai]?.find((entry) => entry.slot === item.slot - (item.ai - 1) * 14);
+    try {
+      const result = await api<WorkspaceFile>(`/workspace/file?date=${date}&ai=${item.ai}&slot=${item.slot - (item.ai - 1) * 14}&kind=${kind}`);
+      setFileViewer({ item, kind, content: result.content, hash: result.hash, filename: result.filename, exists: result.exists });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setFileViewer({
+          item, kind, content: '', hash: null,
+          filename: kind === 'prompt' ? (status?.prompt_filename || '') : (status?.output_filename || ''),
+          exists: false,
+        });
+        return;
+      }
+      toast(messageOf(err), 'error');
+    }
+  }
+  async function saveWorkspaceFile() {
+    if (!fileViewer || !fileViewer.exists) return;
+    await execute('workspace-file-save', async () => {
+      const slot = fileViewer.item.slot - (fileViewer.item.ai - 1) * 14;
+      await api('/workspace/file', {
+        method: 'PUT',
+        body: JSON.stringify({
+          date, ai: fileViewer.item.ai, slot, kind: fileViewer.kind,
+          content: fileViewer.content, expected_hash: fileViewer.hash,
+        }),
+      });
+      const result = await api<WorkspaceFile>(`/workspace/file?date=${date}&ai=${fileViewer.item.ai}&slot=${slot}&kind=${fileViewer.kind}`);
+      setFileViewer({ ...fileViewer, content: result.content, hash: result.hash, filename: result.filename, exists: result.exists });
+      await refreshWorkspace();
+      toast('Đã lưu file TXT.');
+    });
+  }
+  async function deleteWorkspaceFile() {
+    if (!fileViewer || !fileViewer.exists || !window.confirm(`Xóa file ${fileViewer.filename}? Brief trong SQLite sẽ không bị xóa.`)) return;
+    await execute('workspace-file-delete', async () => {
+      const slot = fileViewer.item.slot - (fileViewer.item.ai - 1) * 14;
+      await api(`/workspace/file?date=${date}&ai=${fileViewer.item.ai}&slot=${slot}&kind=${fileViewer.kind}`, { method: 'DELETE' });
+      setFileViewer({ ...fileViewer, content: '', hash: null, exists: false });
+      await refreshWorkspace();
+      toast('Đã xóa file TXT.');
+    });
+  }
+  function downloadWorkspaceFile() {
+    if (!fileViewer?.exists) return;
+    const blob = new Blob([fileViewer.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileViewer.filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
   async function importIdeas() {
     await execute('plan-import', async () => {
@@ -368,6 +478,8 @@ export default function ThangMiaPage() {
                 <div className="workflow-heading-actions"><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div>
                   <button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div>
                   <div className="section-actions"><button className="button secondary" onClick={() => void scanToday()} disabled={!!working}><Search size={16}/> Rà trùng ý tưởng</button>
+                  <button className="button secondary" onClick={() => void openWorkspaceConfig()} disabled={!!working}><Database size={16}/> Workspace</button>
+                  <button className="button secondary" onClick={() => void refreshWorkspace()} disabled={!!working}><RefreshCw size={16}/> Làm mới file</button>
                   <button className="button secondary" onClick={() => setFilter('ready')}><Layers size={16}/> Còn lại: {overview.ideas_remaining}</button></div></div></div>
 
               <div className="filter-row"><div className="search-box"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm tên truyện, chủ đề, nhân vật..." aria-label="Tìm thẻ" />{search && <button aria-label="Xóa tìm kiếm" onClick={() => setSearch('')}><X size={14}/></button>}</div>
@@ -384,6 +496,7 @@ export default function ThangMiaPage() {
                   <div className="lane-heading"><div className="lane-title-row"><div className={`ai-avatar avatar-${ai}`}><Sparkles size={19}/></div><div><h3>AI {ai}</h3><span>{assigned} / {lane.length} đã ghi nhận</span></div><div className="lane-count">{lane.length} THẺ</div></div>
                     <div className="lane-progress"><div style={{width: `${lane.length ? assigned/lane.length*100 : 0}%`}}/></div>
                     <button type="button" className="button primary full" disabled={!ready || !!working} onClick={() => copyNext(ai)}><Clipboard size={16}/> Sao chép tiếp <ArrowRight size={17}/></button>
+                    <button type="button" className="button secondary full" disabled={!!working} onClick={() => void exportLane(ai)}><FileText size={16}/> Xuất 14 TXT</button>
                     <div className="lane-navigation">
                       <button type="button" className="small-button" disabled={visible.length < 2} onClick={() => setLaneCursors((current) => ({ ...current, [ai]: (cursor + 1) % visible.length }))}><ChevronRight size={14}/> Bài tiếp theo</button>
                       <button type="button" className="small-button" disabled={!visible.length} onClick={() => setLaneViewAll((current) => ({ ...current, [ai]: !current[ai] }))}>{laneViewAll[ai] ? 'Thu gọn' : `Xem toàn bộ (${visible.length})`}</button>
@@ -412,6 +525,11 @@ export default function ThangMiaPage() {
                       <button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa / P1 / P2</button>
                       {item.status === 'sent' || item.status === 'part1' ? <button type="button" className="small-button copy-undo" title="Hoàn tác sao chép" aria-label="Hoàn tác sao chép" disabled={!!working} onClick={() => void undoCopied(item)}><RotateCcw size={14}/> Hoàn tác sao chép</button> : null}
                       <button type="button" className={`small-square ${item.status === 'done' ? 'undo' : ''}`} title={item.status === 'done' ? 'Hoàn tác' : 'Đánh dấu hoàn tất'} aria-label={item.status === 'done' ? 'Hoàn tác' : 'Hoàn tất'} onClick={() => void toggleDone(item)}><Check size={16}/></button></div>
+                    <div className="dialog-copy-hint"><span>TXT:</span>
+                      <button type="button" onClick={() => void openWorkspaceFile(item, 'prompt')}>Prompt</button>
+                      <button type="button" onClick={() => void openWorkspaceFile(item, 'output')}>Truyện trả về</button>
+                      {workspaceStatus[ai]?.find((entry) => entry.slot === item.slot - (ai - 1) * 14)?.output_exists && <small>Đã có output · chưa đổi trạng thái nghiệp vụ</small>}
+                    </div>
                   </article>) : <div className="lane-empty"><FileText size={28}/><strong>Không có thẻ phù hợp</strong><span>{lane.length ? 'Thử đổi bộ lọc hoặc từ khóa.' : 'Hãy bổ sung 14 ý tưởng cho AI này.'}</span></div>}</div>
                   <div className="lane-footer"><span><span className="mini-indicator"/> {ready} thẻ chưa giao</span><span>{lane.length} thẻ tổng</span></div>
                 </section>;
@@ -458,6 +576,20 @@ export default function ThangMiaPage() {
           <div className="edit-fields">{FIELD_LABELS.map(({key,label,placeholder}) => <label key={key} className="edit-field"><span>{label}</span>{key === 'title' ? <input value={form[key]} onChange={e => setForm({...form,[key]:e.target.value})} placeholder={placeholder}/>:<textarea value={form[key]} onChange={e => setForm({...form,[key]:e.target.value})} placeholder={placeholder} rows={2}/>}</label>)}</div>
           <div className="dialog-actions"><button className="button subtle" onClick={() => void scanEdited()} disabled={!!working}><Search size={16}/> Kiểm tra gần giống</button><div className="dialog-right-actions"><button className="button secondary" disabled={!!working} onClick={() => {setEditing(null);setForm(null);}}>Hủy</button><button className="button primary" disabled={!!working} onClick={() => void saveEdit()}><Check size={16}/> Lưu & đóng</button></div></div>
           <div className="dialog-copy-hint"><span>Lưu thay đổi & sao chép prompt:</span><button onClick={() => void saveAndCopy('full')} disabled={!!working}>Full</button><button onClick={() => void saveAndCopy('part1')} disabled={!!working}>Part 1</button><button onClick={() => void saveAndCopy('part2')} disabled={!!working}>Part 2</button></div>
+        </section></div>}
+      {configOpen && workspaceConfig && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setConfigOpen(false);}}>
+        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label="Cấu hình workspace">
+          <div className="dialog-head"><div><div className="eyebrow muted">WORKSPACE STORAGE</div><h2>Cấu hình thư mục TXT</h2><p>Backend xác nhận quyền đọc/ghi; trình duyệt không tự truy cập đường dẫn Windows.</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setConfigOpen(false)}><X size={21}/></button></div>
+          <label className="edit-field"><span>Đường dẫn tuyệt đối</span><input value={configFolder} onChange={(e) => setConfigFolder(e.target.value)} placeholder="D:\\ThangMiaData" /></label>
+          <div className="info-note"><Database size={18}/><span>Hiện tại: {workspaceConfig.folder}<br/>Quyền workspace: {workspaceConfig.readable ? 'đọc được' : 'không đọc được'} · {workspaceConfig.writable ? 'ghi được' : 'không ghi được'}</span></div>
+          <div className="dialog-actions"><button className="button secondary" onClick={() => void openWorkspaceConfig()} disabled={!!working}><RefreshCw size={16}/> Kiểm tra lại</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => setConfigOpen(false)}>Hủy</button><button className="button primary" onClick={() => void saveWorkspaceConfig()} disabled={!!working}><Check size={16}/> Xác nhận thư mục</button></div></div>
+        </section></div>}
+      {fileViewer && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setFileViewer(null);}}>
+        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label={fileViewer.kind === 'prompt' ? 'Prompt TXT' : 'Truyện trả về'}>
+          <div className="dialog-head"><div><div className="eyebrow muted">{fileViewer.kind === 'prompt' ? 'PROMPT TXT' : 'GEMINI OUTPUT'}</div><h2>{fileViewer.kind === 'prompt' ? 'Prompt' : 'Truyện trả về'}</h2><p>{fileViewer.filename || 'Chưa có file'} · AI {fileViewer.item.ai} · slot {String(fileViewer.item.slot - (fileViewer.item.ai - 1) * 14).padStart(2, '0')}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setFileViewer(null)}><X size={21}/></button></div>
+          {!fileViewer.exists ? <div className="report-empty"><FileText size={35}/><strong>{fileViewer.kind === 'output' ? 'Chưa có kết quả' : 'Chưa có prompt TXT'}</strong><p>File chưa tồn tại trong workspace hiện tại.</p></div> :
+            <textarea className="plan-textarea" value={fileViewer.content} onChange={(e) => setFileViewer({ ...fileViewer, content: e.target.value })} spellCheck={false} rows={18} />}
+          <div className="dialog-actions"><button className="button secondary" onClick={downloadWorkspaceFile} disabled={!fileViewer.exists}><Download size={16}/> Tải file</button><button className="button secondary" onClick={() => void deleteWorkspaceFile()} disabled={!fileViewer.exists || !!working}><RotateCcw size={16}/> Xóa file</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => setFileViewer(null)}>Đóng</button><button className="button primary" onClick={() => void saveWorkspaceFile()} disabled={!fileViewer.exists || !!working}><Check size={16}/> Lưu file TXT</button></div></div>
         </section></div>}
       {report && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setReport(null);}}><section className="dialog report-dialog" role="dialog" aria-modal="true" aria-label="Kết quả rà trùng"><div className="dialog-head"><div><div className="eyebrow muted">LEXICAL SIMILARITY CHECK</div><h2>{report.title}</h2><p>Phương pháp heuristic từ khóa, không phải kiểm tra đạo văn.</p></div><button className="icon-button" onClick={() => setReport(null)} aria-label="Đóng"><X size={20}/></button></div>
         <div className="report-list">{report.rows.length ? report.rows.map((r,i) => <div className="report-row" key={i}><span className="report-score">{Math.round(r.score*100)}%</span><div><strong>{r.left}</strong>{r.right && <p>↔ {r.right}</p>}</div></div>) : <div className="report-empty"><CheckCircle2 size={35}/><strong>Chưa phát hiện cặp gần giống</strong><p>Vẫn nên duyệt thủ công vì cách so từ khóa có thể bỏ sót ý tưởng giống nghĩa.</p></div>}</div><div className="dialog-actions"><button className="button primary" onClick={() => setReport(null)}>Đã hiểu</button></div></section></div>}

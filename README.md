@@ -65,6 +65,27 @@ Then open http://localhost:3000. SQLite persists in the existing `story42_data` 
 
 The web app stores its own data under `~/.thangmia/thangmia.sqlite3` by default. If the legacy web database `~/.story42_web/story42.sqlite3` exists, the backend backs it up and copies it to the new path only when the new database does not exist. The legacy database and desktop JSON file are never deleted or overwritten.
 
+To export Full prompts for a lane, set `THANGMIA_WORKSPACE_DIR` (default:
+`~/.thangmia/workspace/`) to the directory shared with the Chrome Extension,
+then click **Xuất 14 TXT** in Workflow. Files are written under `AI1`, `AI2`,
+or `AI3` using the selected date and lane slot. Existing input or output files
+are skipped and never overwritten. With Docker, mount the same host directory
+as the backend workspace; a container path is not automatically visible to
+Chrome on the host.
+
+On Windows, set the persistent user variable before starting or restarting the
+backend:
+
+```powershell
+[Environment]::SetEnvironmentVariable('THANGMIA_WORKSPACE_DIR', 'D:\thang\workspace', 'User')
+```
+
+Workflow also provides **Workspace** configuration, file status refresh, prompt
+and output viewing/editing, download, and confirmed deletion. The backend keeps
+`.thangmia_manifest.json` in the workspace to map each file to the date, lane,
+slot, and brief UID. Files without a matching mapping are shown as warnings
+and are not assigned automatically.
+
 ## User workflow
 
 1. **Trang chủ:** choose date, examine 42 cards, review duplication warnings, copy next available prompt per AI, and mark each story complete manually. Edit a brief and copy the Full / Part 1 / Part 2 prompts as needed.

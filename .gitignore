@@ -8,3 +8,4 @@ frontend/*.tsbuildinfo
 *.sqlite3-shm
 *.sqlite3-wal
 .env
+.thangmia/
