@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Story42 Web Studio — Next.js + React + FastAPI
 
 **Version 3.0.0 — web migration of Story42 Offline Studio 2.0.0**
@@ -122,3 +123,6 @@ story42-web/
 ├── Dockerfile.frontend
 └── docker-compose.yml
 ```
+=======
+# content
+>>>>>>> d15903ed345d4d681a6d747bdeb1e4a1a8cfbf92
