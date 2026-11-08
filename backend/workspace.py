@@ -270,8 +270,18 @@ def lane_status(date: str, ai: int, items: Iterable[dict]) -> list[dict[str, obj
     root, lane = _lane_path(ai)
     manifest = _read_manifest(root) if root.exists() else {}
     result = []
-    for slot in range(1, 15):
-        item = _validate_slot(items, ai, slot)
+    lane_items: dict[int, dict] = {}
+    for item in items:
+        if item.get('ai') != ai or item.get('archived_at'):
+            continue
+        if not item.get('uid'):
+            raise ValueError('Brief trong workspace thiếu UID hợp lệ.')
+        slot = _local_slot(ai, item.get('slot', 0))
+        if slot in lane_items:
+            raise ValueError(f'AI {ai} có slot {slot:02d} bị trùng.')
+        lane_items[slot] = item
+
+    for slot, item in sorted(lane_items.items()):
         input_name, output_name = _file_names(date, ai, slot)
         image_prompt_name = _image_prompt_name(date, ai, slot)
         input_path, output_path = lane / input_name, lane / output_name

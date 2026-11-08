@@ -7,11 +7,11 @@ import {
   Check, CheckCircle2, CircleHelp, Clipboard, CloudDownload,
   Database, Download, FileJson, FileText, Filter, History, LayoutDashboard,
   ImageIcon, Layers, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Search,
-  Settings2, ShieldCheck, Sparkles, WandSparkles, X, Zap,
+  Settings2, ShieldCheck, Sparkles, Trash2, WandSparkles, X, Zap,
 } from 'lucide-react';
 import { api, ApiError, copyClipboard, download } from '@/lib/api';
 import type {
-  BriefFields, Duplicate, HistoryData, Mode, Overview, Pair, PlanConflict, Story, Tab,
+  ArchiveDuplicate, BriefFields, Duplicate, HistoryData, IdeaLibraryData, Mode, Overview, Pair, PlanConflict, Story, Tab,
   WorkspaceConfig, WorkspaceFile, WorkspaceItem, PromptMode, PromptTemplates,
 } from '@/lib/types';
 
@@ -27,7 +27,7 @@ const FIELD_LABELS: { key: keyof BriefFields; label: string; placeholder: string
 const STATUSES: Record<string, string> = { ready: 'Chưa giao', sent: 'Đã giao', part1: 'Đã có Part 1', done: 'Hoàn tất' };
 const emptyStats = { total: 0, done: 0, in_progress: 0, ready: 0, sent: 0, part1: 0 };
 const emptyOverview: Overview = { date: '', exists: false, items: [], stats: emptyStats,
-  theme_names: {}, library_size: 0, ideas_remaining: 0, starter_used: 0, starter_total: 84, days_count: 0 };
+  theme_names: {}, library_size: 0, ideas_remaining: 0, starter_used: 0, starter_total: 126, days_count: 0 };
 
 function localToday(): string {
   const d = new Date();
@@ -67,11 +67,22 @@ function statsForItems(items: Story[]): Overview['stats'] {
 type Notice = { text: string; type: 'success' | 'error' | 'info' };
 type SimilarityReport = { title: string; rows: { left: string; right?: string; score: number }[] };
 
+function archiveWarningText(warnings: ArchiveDuplicate[]) {
+  if (!warnings.length) return '';
+  const first = warnings[0];
+  return `Cảnh báo: phát hiện ${warnings.length} bài trong Workflow gần giống Kho lưu trữ. ` +
+    `Ví dụ: “${first.item_title}” ↔ “${first.archive_title}” (${Math.round(first.score * 100)}%).`;
+}
+
 export default function ThangMiaPage() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [date, setDate] = useState(localToday);
   const [overview, setOverview] = useState<Overview>(emptyOverview);
   const [history, setHistory] = useState<HistoryData | null>(null);
+  const [ideaLibrary, setIdeaLibrary] = useState<IdeaLibraryData | null>(null);
+  const [ideaLibraryLoading, setIdeaLibraryLoading] = useState(false);
+  const [ideaSearch, setIdeaSearch] = useState('');
+  const [ideaTheme, setIdeaTheme] = useState('all');
   const [archivedItems, setArchivedItems] = useState<(Story & { date: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState('');
@@ -79,8 +90,6 @@ export default function ThangMiaPage() {
   const [unavailable, setUnavailable] = useState('');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'ready' | 'active' | 'done'>('all');
-  const [vaultSort, setVaultSort] = useState<'slot' | 'title' | 'status'>('slot');
-  const [vaultCollapsed, setVaultCollapsed] = useState<Record<1 | 2 | 3, boolean>>({ 1: false, 2: false, 3: false });
   const [editing, setEditing] = useState<Story | null>(null);
   const [archiveViewer, setArchiveViewer] = useState<{
     item: Story & { date: string };
@@ -110,6 +119,12 @@ export default function ThangMiaPage() {
   const [promptPreviewUid, setPromptPreviewUid] = useState('');
   const [promptLoading, setPromptLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const lastSyncedDate = useRef('');
+  const overviewRequest = useRef(0);
+  const historyRequest = useRef(0);
+  const libraryRequest = useRef(0);
+  const archiveRequest = useRef(0);
+  const workspaceRequest = useRef(0);
 
   function toast(text: string, type: Notice['type'] = 'success') { setNotice({ text, type }); }
   useEffect(() => {
@@ -120,60 +135,110 @@ export default function ThangMiaPage() {
 
   const refresh = useCallback(async (target: string, autoCreate: boolean) => {
     if (!target) return;
+    const requestId = ++overviewRequest.current;
     setLoading(true);
     try {
       let data = await api<Overview>('/overview?date=' + encodeURIComponent(target));
       if (!data.exists && autoCreate) {
         try {
-          await api('/days', { method: 'POST', body: JSON.stringify({ date: target }) });
+          const created = await api<{ archive_duplicates?: ArchiveDuplicate[] }>('/days', {
+            method: 'POST', body: JSON.stringify({ date: target }),
+          });
+          if (requestId === overviewRequest.current && created.archive_duplicates?.length) {
+            setNotice({ text: archiveWarningText(created.archive_duplicates), type: 'info' });
+          }
           data = await api<Overview>('/overview?date=' + encodeURIComponent(target));
-          setUnavailable('');
+          if (requestId === overviewRequest.current) setUnavailable('');
         } catch (err) {
           if (err instanceof ApiError && err.status === 409 && err.message.includes('đã tồn tại')) {
             data = await api<Overview>('/overview?date=' + encodeURIComponent(target));
           } else {
-            setUnavailable(messageOf(err));
+            if (requestId === overviewRequest.current) setUnavailable(messageOf(err));
           }
         }
-      } else if (data.exists) setUnavailable('');
-      setOverview(data);
+      } else if (data.exists && requestId === overviewRequest.current) setUnavailable('');
+      if (requestId === overviewRequest.current) setOverview(data);
     } catch (err) { toast(messageOf(err), 'error'); }
-    finally { setLoading(false); }
+    finally { if (requestId === overviewRequest.current) setLoading(false); }
   }, []);
 
-  // This effect synchronizes the selected date with the backend.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (date) void refresh(date, true); }, [date, refresh]);
   const refreshHistory = useCallback(async () => {
-    try { setHistory(await api<HistoryData>('/history')); }
+    const requestId = ++historyRequest.current;
+    try {
+      const result = await api<HistoryData>('/history');
+      if (requestId === historyRequest.current) setHistory(result);
+    }
     catch (err) { toast(messageOf(err), 'error'); }
   }, []);
+  const refreshIdeaLibrary = useCallback(async () => {
+    const requestId = ++libraryRequest.current;
+    setIdeaLibraryLoading(true);
+    try {
+      const result = await api<IdeaLibraryData>('/library');
+      if (requestId === libraryRequest.current) setIdeaLibrary(result);
+    }
+    catch (err) { toast(messageOf(err), 'error'); }
+    finally { if (requestId === libraryRequest.current) setIdeaLibraryLoading(false); }
+  }, []);
+  const refreshArchive = useCallback(async () => {
+    const requestId = ++archiveRequest.current;
+    try {
+      const result = await api<{ items: (Story & { date: string })[] }>('/archive');
+      if (requestId === archiveRequest.current) setArchivedItems(result.items);
+    } catch (err) { toast(messageOf(err), 'error'); }
+  }, []);
   const refreshWorkspace = useCallback(async () => {
-    if (!overview.exists || !['workflow', 'vault'].includes(tab)) return;
+    if (!overview.exists || tab !== 'workflow') return;
+    const requestId = ++workspaceRequest.current;
     try {
       const statuses = await Promise.all(([1, 2, 3] as const).map((ai) =>
         api<{ items: WorkspaceItem[] }>(`/workspace/status?date=${date}&ai=${ai}`)));
-      setWorkspaceStatus(Object.fromEntries(statuses.map((status, index) => [index + 1, status.items])));
-    } catch (err) { toast(messageOf(err), 'error'); }
+      if (requestId === workspaceRequest.current && document.visibilityState === 'visible') {
+        setWorkspaceStatus(Object.fromEntries(statuses.map((status, index) => [index + 1, status.items])));
+      }
+    } catch (err) {
+      if (requestId === workspaceRequest.current) toast(messageOf(err), 'error');
+    }
   }, [date, overview.exists, tab]);
-  // Workspace status is polled while Workflow or Kho ý tưởng is open.
+  // Check workspace files periodically only while Workflow is visible.
   useEffect(() => {
-    if (!['workflow', 'vault'].includes(tab) || !overview.exists) return;
-    // Polling synchronizes external workspace files while either view is open.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshWorkspace();
-    const timer = window.setInterval(() => void refreshWorkspace(), 5000);
-    return () => window.clearInterval(timer);
+    if (tab !== 'workflow' || !overview.exists) return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') void refreshWorkspace();
+    };
+    refreshIfVisible();
+    const timer = window.setInterval(refreshIfVisible, 30_000);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+      workspaceRequest.current += 1;
+    };
   }, [overview.exists, refreshWorkspace, tab]);
-  // This effect loads history when its tab becomes active.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { if (tab === 'history') void refreshHistory(); }, [tab, refreshHistory]);
+  const syncPages = useCallback(async (targetDate: string, autoCreate: boolean) => {
+    await refresh(targetDate, autoCreate);
+    await Promise.all([refreshHistory(), refreshIdeaLibrary()]);
+    await refreshArchive();
+  }, [refresh, refreshArchive, refreshHistory, refreshIdeaLibrary]);
+
+  // Refresh the selected date's overview, and the history list when it is open.
   useEffect(() => {
-    if (tab !== 'archive') return;
-    void api<{ items: (Story & { date: string })[] }>('/archive')
-      .then((result) => setArchivedItems(result.items))
-      .catch((err) => toast(messageOf(err), 'error'));
-  }, [tab]);
+    if (!date) return;
+    const previousDate = lastSyncedDate.current;
+    const shouldCreateDay = lastSyncedDate.current !== date;
+    if (!shouldCreateDay) return;
+    lastSyncedDate.current = date;
+    void refresh(date, shouldCreateDay);
+    if (previousDate && tab === 'history') void refreshHistory();
+  }, [date, refresh, refreshHistory, tab]);
+
+  // Load each independent collection only when its page is opened.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (tab === 'current-ideas') void refreshIdeaLibrary();
+    else if (tab === 'archive') void refreshArchive();
+    else if (tab === 'history') void refreshHistory();
+  }, [tab, refreshArchive, refreshHistory, refreshIdeaLibrary]);
 
   async function execute(key: string, action: () => Promise<void>) {
     if (working) return;
@@ -257,35 +322,67 @@ export default function ThangMiaPage() {
     });
   }
 
-  async function deleteIdea(item: Story) {
-    if (item.status !== 'ready') {
-      toast('Chỉ có thể xóa bài chưa giao.', 'error');
-      return;
-    }
-    if (!window.confirm(`Xóa vĩnh viễn bài “${item.title}” khỏi Kho ý tưởng?`)) return;
-    await execute(`delete-${item.uid}`, async () => {
-      const result = await api<{ ideas_remaining: number }>(`/days/${date}/items/${item.uid}`, { method: 'DELETE' });
-      setOverview((current) => {
-        const items = current.items.filter((candidate) => candidate.uid !== item.uid);
-        return { ...current, items, stats: statsForItems(items), ideas_remaining: result.ideas_remaining };
-      });
-      toast(`Đã xóa bài khỏi Kho ý tưởng · ${item.title}`);
+  async function clearCurrentIdeas() {
+    if (!window.confirm(
+      'Xóa toàn bộ ý tưởng hiện tại và mọi bài đang hoạt động trong Kho ý tưởng/Workflow trên tất cả ngày? ' +
+      'Ngày lịch sử sẽ được giữ lại ở trạng thái rỗng; Kho lưu trữ, prompt và file trong Workspace được giữ nguyên. ' +
+      'Khi nạp đủ 42 ý tưởng mới, hệ thống sẽ tự chia vào một ngày Workflow mới.',
+    )) return;
+    await execute('clear-current-ideas', async () => {
+      const result = await api<{ deleted_count: number; workflow_cleared_count: number }>('/library', { method: 'DELETE' });
+      overviewRequest.current += 1;
+      setOverview((current) => ({
+        ...current,
+        items: [],
+        stats: statsForItems([]),
+        library_size: 0,
+        ideas_remaining: 0,
+      }));
+      setWorkspaceStatus({});
+      setUnavailable('Kho ý tưởng đã được xóa. Nạp đủ 42 ý tưởng mới để tạo Workflow.');
+      await syncPages(date, false);
+      toast(`Đã xóa ${result.deleted_count} ý tưởng và ${result.workflow_cleared_count} bài Workflow đang hoạt động. Kho lưu trữ được giữ nguyên.`);
     });
   }
 
-  async function updateMetadata(item: Story, changes: { notes?: string; favorite?: boolean; draft?: boolean }) {
-    await execute(`metadata-${item.uid}`, async () => {
-      const result = await api<{ item: Story }>(`/days/${date}/items/${item.uid}/metadata`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          notes: changes.notes ?? item.notes ?? '',
-          favorite: changes.favorite ?? item.favorite ?? false,
-          draft: changes.draft ?? item.draft ?? false,
-        }),
-      });
-      setOverview((current) => ({ ...current, items: current.items.map((candidate) =>
-        candidate.uid === item.uid ? result.item : candidate) }));
-      toast('Đã lưu thông tin Kho ý tưởng.');
+  async function replenishIdeaLibrary() {
+    await execute('replenish-idea-library', async () => {
+      let allowSimilar = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const result = await api<{
+            message: string;
+            workflow_date: string | null;
+            archive_duplicates: ArchiveDuplicate[];
+          }>('/library/import', {
+            method: 'POST',
+            body: JSON.stringify({ ai: plannerAi, text: plannerText, allow_similar: allowSimilar }),
+          });
+          setPlannerText('');
+          await refreshIdeaLibrary();
+          if (result.workflow_date) {
+            setDate(result.workflow_date);
+            await refresh(result.workflow_date, false);
+            await refreshHistory();
+          }
+          const warning = archiveWarningText(result.archive_duplicates);
+          toast(result.workflow_date
+            ? `${result.message} Đã tự chia 42 ý tưởng vào Workflow ngày ${prettyDate(result.workflow_date)}.${warning ? ` ${warning}` : ''}`
+            : result.message, warning ? 'info' : 'success');
+          return;
+        } catch (err) {
+          const detail = err instanceof ApiError ? err.detail as PlanConflict : undefined;
+          if (err instanceof ApiError && err.status === 409 && detail?.code === 'similar_ideas' && !allowSimilar) {
+            const warnings = (detail.alerts || []).map((item) =>
+              `${item.line}. ${item.title} ↔ ${item.other_title} (${Math.round(item.score * 100)}%)`,
+            ).join('\n');
+            if (!window.confirm(`Cảnh báo trùng từ khóa:\n${warnings}\n\nVẫn nạp 14 ý tưởng vào kho?`)) return;
+            allowSimilar = true;
+            continue;
+          }
+          throw err;
+        }
+      }
     });
   }
 
@@ -361,7 +458,10 @@ export default function ThangMiaPage() {
       const result = await api<{ pairs: Pair[]; total: number }>(`/days/${date}/scan`);
       setReport({ title: `Rà trùng ý tưởng · ${prettyDate(date)}`,
         rows: result.pairs.map((x) => ({ left: `#${x.first.slot} ${x.first.title}`,
-          right: `#${x.second.slot} ${x.second.title}`, score: x.score })) });
+          right: x.second.archived
+            ? `Kho lưu trữ · ${prettyDate(x.second.date || '')} · ${x.second.title}`
+            : `#${x.second.slot} ${x.second.title}`,
+          score: x.score })) });
     });
   }
   async function copyPlanningPrompt() {
@@ -630,12 +730,21 @@ export default function ThangMiaPage() {
     if (filter === 'done') return item.status === 'done';
     return true;
   }), [overview.items, search, filter]);
+  const visibleLibraryIdeas = useMemo(() => {
+    const query = ideaSearch.trim().toLocaleLowerCase();
+    return (ideaLibrary?.items ?? []).filter((idea) => {
+      if (ideaTheme !== 'all' && idea.theme !== ideaTheme) return false;
+      if (!query) return true;
+      return `${idea.title} ${idea.hero} ${idea.antagonist} ${idea.conflict} ${idea.evidence} ${idea.reversal} ${idea.ending}`
+        .toLocaleLowerCase().includes(query);
+    });
+  }, [ideaLibrary, ideaSearch, ideaTheme]);
   const plannedLines = plannerText.split('\n').filter((line) => line.includes('||')).length;
   const progressPercent = overview.stats.total ? Math.round(overview.stats.done * 100 / overview.stats.total) : 0;
 
   const navItems: { id: Tab; title: string; desc: string; icon: typeof LayoutDashboard }[] = [
     { id: 'dashboard', title: 'Trang chủ', desc: 'Tổng quan hệ thống', icon: LayoutDashboard },
-    { id: 'vault', title: 'Kho ý tưởng', desc: '42 brief theo ngày', icon: Database },
+    { id: 'current-ideas', title: 'Ý tưởng hiện tại', desc: 'Ý tưởng còn trong kho', icon: Sparkles },
     { id: 'archive', title: 'Kho lưu trữ', desc: 'Bài đã hoàn tất', icon: CloudDownload },
     { id: 'workflow', title: 'Workflow', desc: 'Hàng đợi sản xuất', icon: Layers },
     { id: 'planner', title: 'Bổ sung ý tưởng', desc: '14 brief / AI', icon: WandSparkles },
@@ -653,7 +762,7 @@ export default function ThangMiaPage() {
         <div className="sidebar-section-label">MENU</div>
         <nav className="nav-list" aria-label="Điều hướng chính">
           {navItems.map(({id, title, desc, icon: Icon}) => (
-            <button key={id} onClick={() => { setTab(id); if (id === 'vault') setFilter('all'); setSidebarOpen(false); }} className={`nav-link ${tab === id ? 'active' : ''}`}>
+            <button key={id} onClick={() => { setTab(id); setSidebarOpen(false); }} className={`nav-link ${tab === id ? 'active' : ''}`}>
               <Icon size={20}/><span className="nav-text"><strong>{title}</strong><small>{desc}</small></span>
               {tab === id && <span className="nav-active-dot"/>}
             </button>
@@ -694,31 +803,57 @@ export default function ThangMiaPage() {
 
           </>}
 
-          {tab === 'vault' && <>
-            <section className="workflow-section vault-page">
-              <div className="section-heading"><div><div className="eyebrow muted">IDEA VAULT</div><h2>Kho ý tưởng <span className="num-badge">{overview.items.filter((item) => item.status !== 'done').length} bài còn lại</span> <span className="num-badge">{overview.stats.done} đã hoàn tất</span></h2><p>Xem, tìm kiếm và chỉnh sửa brief chưa hoàn tất. Bài đã hoàn tất được giữ trong Workflow và Lịch sử nhưng tự ẩn khỏi kho.</p></div>
-                <div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày kho ý tưởng" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới kho ý tưởng" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
-              <div className="filter-row"><div className="search-box"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm trong 7 trường brief..." aria-label="Tìm ý tưởng" />{search && <button aria-label="Xóa tìm kiếm" onClick={() => setSearch('')}><X size={14}/></button>}</div>
-                <div className="filter-pills"><Filter size={16}/>{([['all','Tất cả'],['ready','Chưa giao'],['active','Đang xử lý']] as const).map(([key,label]) => <button key={key} onClick={() => setFilter(key)} className={filter === key ? 'selected':''}>{label}</button>)}</div>
-                <select className="vault-sort" value={vaultSort} onChange={(e) => setVaultSort(e.target.value as typeof vaultSort)}><option value="slot">Sắp xếp vị trí</option><option value="title">Sắp xếp tiêu đề</option><option value="status">Sắp xếp trạng thái</option></select></div>
-              <div className="vault-grid">{([1,2,3] as const).map((ai) => {
-                const items = visibleItems.filter((item) => item.ai === ai && item.status !== 'done').sort((a, b) =>
-                  vaultSort === 'title' ? a.title.localeCompare(b.title) :
-                  vaultSort === 'status' ? a.status.localeCompare(b.status) : a.slot - b.slot);
-                return <section className={`vault-lane ${vaultCollapsed[ai] ? 'collapsed' : ''}`} key={ai}><div className="vault-lane-head"><strong>AI {ai}</strong><span>{items.length} / 14</span><button type="button" className="small-button vault-collapse" onClick={() => setVaultCollapsed((current) => ({ ...current, [ai]: !current[ai] }))}>{vaultCollapsed[ai] ? 'Mở rộng' : 'Thu gọn'}</button></div>
-                  <div className="vault-lane-cards">{items.map((item) => {
-                    const fileStatus = workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item));
-                    return <article className="vault-card" key={item.uid}>
-                      <div className="card-meta"><span className="card-index">#{String(laneSlot(item)).padStart(2, '0')}</span><span>{overview.theme_names[item.theme] || item.theme}</span><span className={`status-pill ${item.status}`}>{STATUSES[item.status]}</span></div>
-                      <h3>{item.title}</h3>
-                      <div className="vault-fields">{FIELD_LABELS.map(({key, label}) => <div key={key}><b>{label}</b><span>{item[key]}</span></div>)}</div>
-                      <div className="vault-meta-actions"><button className={`small-button ${item.favorite ? 'favorite-active' : ''}`} onClick={() => void updateMetadata(item, { favorite: !item.favorite })}>★ {item.favorite ? 'Đã thích' : 'Yêu thích'}</button><button className="small-button" onClick={() => void updateMetadata(item, { draft: !item.draft })}>{item.draft ? 'Bản nháp' : 'Đánh dấu nháp'}</button><button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa</button><button className="small-button vault-delete" onClick={() => void deleteIdea(item)} disabled={!!working}><X size={14}/> Xóa bài</button></div>
-                      <textarea className="vault-notes" value={item.notes || ''} onChange={(e) => setOverview((current) => ({ ...current, items: current.items.map((candidate) => candidate.uid === item.uid ? { ...candidate, notes: e.target.value } : candidate) }))} onBlur={(e) => void updateMetadata(item, { notes: e.target.value })} placeholder="Ghi chú riêng..." rows={2}/>
-                      {fileStatus?.prompt_exists || fileStatus?.output_exists ? <div className="vault-warning"><AlertCircle size={14}/> Đã có file TXT/output; chỉnh sửa không tự xóa hoặc ghi đè file cũ.</div> : null}
-                    </article>;
-                  })}</div>
-                </section>;
-              })}</div>
+          {tab === 'current-ideas' && <>
+            <section className="workflow-section vault-page current-ideas-page">
+              <div className="section-heading">
+                <div>
+                  <div className="eyebrow muted">CURRENT IDEA POOL</div>
+                  <h2>Ý tưởng hiện tại <span className="num-badge">{ideaLibrary?.available_count ?? 0} ý tưởng còn dùng được</span></h2>
+                  <p>Danh sách ý tưởng chưa được phân vào Workflow. Ý tưởng đã dùng được ẩn khỏi trang này để tránh trùng lặp.
+                    {ideaLibrary && ideaLibrary.available_count === 0 && ' Kho trống; hãy nạp ý tưởng mới trước khi tạo ngày làm việc.'}</p>
+                </div>
+                <div className="view-controls current-idea-actions">
+                  {ideaLibrary?.available_count ? <button type="button" className="button secondary" onClick={() => void clearCurrentIdeas()} disabled={!!working}>
+                    <Trash2 size={16}/> Xóa toàn bộ ý tưởng
+                  </button> : ideaLibrary && <button type="button" className="button primary" onClick={() => setTab('planner')}>
+                    <Plus size={16}/> Nạp ý tưởng mới
+                  </button>}
+                  <button type="button" className="icon-button" aria-label="Làm mới danh sách ý tưởng" onClick={() => void refreshIdeaLibrary()} disabled={ideaLibraryLoading}>
+                    <RefreshCw size={18}/>
+                  </button>
+                </div>
+              </div>
+              <div className="current-idea-tools">
+                <div className="search-box">
+                  <Search size={17}/>
+                  <input value={ideaSearch} onChange={(event) => setIdeaSearch(event.target.value)}
+                    placeholder="Tìm trong nội dung ý tưởng..." aria-label="Tìm ý tưởng hiện tại"/>
+                  {ideaSearch && <button type="button" aria-label="Xóa tìm kiếm" onClick={() => setIdeaSearch('')}><X size={14}/></button>}
+                </div>
+                <select className="vault-sort" value={ideaTheme} onChange={(event) => setIdeaTheme(event.target.value)}>
+                  <option value="all">Tất cả chủ đề ({ideaLibrary?.available_count ?? 0})</option>
+                  {Object.entries(ideaLibrary?.theme_names ?? {}).map(([theme, label]) => (
+                    <option key={theme} value={theme}>{label} ({ideaLibrary?.theme_counts[theme] ?? 0})</option>
+                  ))}
+                </select>
+                <span className="current-idea-result">{visibleLibraryIdeas.length} hiển thị</span>
+              </div>
+              {ideaLibraryLoading && !ideaLibrary ? <div className="lane-empty"><LoaderCircle size={24}/><span>Đang tải ý tưởng...</span></div> :
+                visibleLibraryIdeas.length ? <div className="current-idea-grid">
+                  {visibleLibraryIdeas.map((idea) => (
+                    <article className="vault-card current-idea-card" key={idea.id}>
+                      <div className="card-meta"><span>{ideaLibrary?.theme_names[idea.theme] ?? idea.theme}</span><span className="status-pill ready">{idea.source === 'starter' ? 'Mẫu' : 'Đã bổ sung'}</span></div>
+                      <h3>{idea.title}</h3>
+                      <div className="vault-fields">{FIELD_LABELS.map(({ key, label }) => (
+                        <div key={key}><b>{label}</b><span>{idea[key]}</span></div>
+                      ))}</div>
+                    </article>
+                  ))}
+                </div> : <div className="lane-empty">
+                  <Database size={28}/>
+                  <strong>{ideaLibraryLoading ? 'Đang tải ý tưởng...' : 'Không có ý tưởng phù hợp'}</strong>
+                  <span>{ideaLibrary?.available_count ? 'Thử từ khóa hoặc chủ đề khác.' : 'Kho chưa có ý tưởng còn dùng được.'}</span>
+                </div>}
             </section>
           </>}
 
@@ -834,7 +969,7 @@ export default function ThangMiaPage() {
           </>}
 
           {tab === 'planner' && <>
-            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> IDEA GENERATION</div><h1>Bổ sung <span>42 ý tưởng</span></h1><p>Tạo 14 brief mới cho mỗi AI, sau đó nhập lại kết quả dạng văn bản ngắn.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
+            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> IDEA GENERATION</div><h1>Bổ sung <span>ý tưởng</span></h1><p>Tạo 14 brief mới cho mỗi lượt. Có thể nạp vào kho để dùng cho ngày sau hoặc nhập thẳng vào Workflow hiện tại.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
             <div className="planner-grid"><section className="panel planner-step"><div className="panel-step-label">BƯỚC 01 <span>CHỌN LUỒNG AI</span></div>
               <h2>Chọn AI cần bổ sung</h2><p>Mỗi AI tạo đúng 14 brief theo thứ tự 14 nhóm chủ đề.</p>
               <div className="ai-picker">{([1,2,3] as const).map(ai => <button key={ai} className={plannerAi === ai ? 'picked' : ''} onClick={() => setPlannerAi(ai)}><div className={`ai-avatar avatar-${ai}`}><Sparkles size={17}/></div><strong>AI {ai}</strong><small>{overview.items.filter(x => x.ai === ai).length}/14 thẻ</small>{plannerAi === ai && <CheckCircle2 size={17} className="picker-check"/>}</button>)}</div>
@@ -847,13 +982,16 @@ export default function ThangMiaPage() {
               <div className="planner-input-head"><div><h2>Dán 14 dòng brief</h2><p>1 dòng = 1 ý tưởng, gồm 8 cột cách nhau bởi <code> || </code>.</p></div><span className={`line-counter ${plannedLines === 14 ? 'counter-valid' : ''}`}>{plannedLines} / 14 dòng</span></div>
               <div className="format-preview"><span>ĐỊNH DẠNG MẪU</span><code>01 || TITLE || PROTAGONIST || ANTAGONIST || UNFAIR ACTION || EVIDENCE || REVERSAL || ENDING</code></div>
               <textarea className="plan-textarea" value={plannerText} onChange={(e) => setPlannerText(e.target.value)} spellCheck={false} placeholder={'01 || Title... || Main character... || Opponent... || Concrete injustice... || Verifiable evidence... || Reversal... || Resolution...\n02 || ...\n...\n14 || ...'} />
-              <div className="textarea-foot"><span>Chỉ nhập ý tưởng, không nhập truyện 3.000 từ.</span><button className="button primary" disabled={!plannerText.trim() || !!working} onClick={() => void importIdeas()}><Plus size={17}/> Nhập 14 ý tưởng <ArrowRight size={16}/></button></div>
+              <div className="textarea-foot"><span>Chỉ nhập ý tưởng, không nhập truyện 3.000 từ.</span><div className="planner-import-actions">
+                <button className="button secondary" disabled={!plannerText.trim() || !!working} onClick={() => void replenishIdeaLibrary()}><Database size={16}/> Nạp 14 vào kho</button>
+                <button className="button primary" disabled={!plannerText.trim() || !!working} onClick={() => void importIdeas()}><Plus size={17}/> Nhập vào Workflow <ArrowRight size={16}/></button>
+              </div></div>
             </section></div>
           </>}
 
           {tab === 'history' && <>
             <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> DATA & BACKUP CENTER</div><h1>Lịch sử <span>& sao lưu</span></h1><p>Theo dõi tiến độ theo ngày và bảo vệ dữ liệu ý tưởng của bạn.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
-            <div className="history-summary"><div className="history-tile"><div className="stat-icon blue"><CalendarDays size={20}/></div><strong>{history?.days.length ?? overview.days_count}</strong><span>Ngày đã tạo</span></div><div className="history-tile"><div className="stat-icon purple"><Database size={20}/></div><strong>{history?.library_size ?? overview.library_size}</strong><span>Brief trong kho</span></div><div className="history-tile"><div className="stat-icon green"><BadgeCheck size={20}/></div><strong>{history?.starter_used ?? overview.starter_used}<small> / 84</small></strong><span>Seed mẫu đã sử dụng</span></div></div>
+            <div className="history-summary"><div className="history-tile"><div className="stat-icon blue"><CalendarDays size={20}/></div><strong>{history?.days.length ?? overview.days_count}</strong><span>Ngày đã tạo</span></div><div className="history-tile"><div className="stat-icon purple"><Database size={20}/></div><strong>{history?.library_size ?? overview.library_size}</strong><span>Brief trong kho</span></div><div className="history-tile"><div className="stat-icon green"><BadgeCheck size={20}/></div><strong>{history?.starter_used ?? overview.starter_used}<small> / {history?.starter_total ?? overview.starter_total}</small></strong><span>Seed mẫu đã sử dụng</span></div></div>
             <div className="history-grid"><section className="panel history-table-panel"><div className="panel-head"><div><h2>Lịch sử sản xuất</h2><p>Tình trạng các ngày làm việc đã lưu</p></div><button className="icon-button" onClick={() => void refreshHistory()} title="Làm mới"><RefreshCw size={18}/></button></div>
               <div className="table-scroll"><table className="data-table"><thead><tr><th>NGÀY LÀM VIỆC</th><th>SỐ THẺ</th><th>ĐÃ GIAO</th><th>HOÀN TẤT</th><th>TIẾN ĐỘ</th></tr></thead><tbody>{history?.days.map(day => <tr key={day.date}><td><button className="date-link" onClick={() => {setDate(day.date);setTab('dashboard');}}><CalendarDays size={15}/>{prettyDate(day.date)}</button></td><td>{day.count}</td><td>{day.assigned}</td><td><strong>{day.done}</strong></td><td><div className="table-progress"><div style={{width:`${day.count ? day.done/day.count*100 : 0}%`}} /></div></td></tr>)}{!history?.days.length && <tr><td colSpan={5} className="empty-table">Chưa có lịch sử ngày làm việc.</td></tr>}</tbody></table></div>
             </section><section className="panel backup-panel"><div className="panel-head"><div><h2>Sao lưu & khôi phục</h2><p>Dữ liệu JSON tương thích bản desktop</p></div><FileJson size={24} className="backup-icon"/></div>
@@ -862,7 +1000,7 @@ export default function ThangMiaPage() {
               <div className="danger-note"><AlertCircle size={17}/> Khôi phục sẽ ghi đè toàn bộ dữ liệu hiện có. Hãy tải bản sao trước.</div>
             </section></div>
           </>}
-          <div className="page-footer"><span><ShieldCheck size={14}/> Offline-first · Không API AI · Không lưu toàn văn truyện</span>          <span>THẮNG MIA Web Studio v3.0.0</span></div>
+          <div className="page-footer"><span><ShieldCheck size={14}/> Offline-first · Không API AI · Không lưu toàn văn truyện</span>          <span>THẮNG MIA Web Studio v3.3.0</span></div>
         </div>
       </main>
 

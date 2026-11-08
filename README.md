@@ -99,7 +99,7 @@ Các trường nội dung khi chỉnh sửa phải dài từ 7 đến 2.000 ký 
 
 - Một ngày có tối đa 42 thẻ: 14 thẻ cho mỗi AI.
 - Có 14 nhóm chủ đề; mỗi ngày mặc định phân bổ 3 thẻ cho mỗi nhóm.
-- Thư viện ban đầu có 84 starter brief khác nhau, đủ cho hai ngày nếu không
+- Thư viện ban đầu có 126 starter brief khác nhau, đủ cho ba ngày nếu không
   nhập thêm ý tưởng.
 - Khi starter brief đã hết, người dùng phải nhập thêm brief qua tab **Bổ sung
   ý tưởng**.
@@ -127,7 +127,9 @@ Thanh điều hướng bên trái mang nhãn **MENU** và gồm các mục:
 
 - **Trang chủ:** hiển thị tổng quan số lượng thẻ, tiến độ hoàn tất, số thẻ đang
   xử lý và số thẻ chưa giao theo ngày đã chọn.
+- **Ý tưởng hiện tại:** xem các brief chưa được phân vào Workflow.
 - **Workflow:** mở hàng đợi sản xuất và các lane AI.
+- **Kho lưu trữ:** xem các bài đã hoàn tất và chuyển khỏi Workflow.
 - **Bổ sung ý tưởng:** nhập thêm brief cho từng AI.
 - **Lịch sử & sao lưu:** xem lịch sử ngày, tải bản sao lưu và khôi phục dữ liệu.
 
@@ -157,8 +159,7 @@ Người dùng có thể:
 14. Xem và lọc số ý tưởng còn lại trong kho.
 15. Khi Extension đã trả về `_output.txt`, nhấn **Sao chép truyện trả về** để
     sao chép nội dung truyện và ghi nhận thẻ là `done`.
-16. Trong **Kho ý tưởng**, xem số bài còn lại, xóa bài chưa giao và tự ẩn các
-    bài đã hoàn tất.
+16. Chuyển bài đã hoàn tất vào Kho lưu trữ bằng nút **Bài tiếp theo**.
 
 Thao tác sao chép được thực hiện theo thứ tự:
 
@@ -174,11 +175,8 @@ nhận hoàn tất sau khi clipboard xác nhận thành công, rồi chuyển tr
 sang `done`. Nếu file output chưa tồn tại hoặc clipboard thất bại, thẻ không
 được ghi nhận hoàn tất.
 
-Kho ý tưởng hiển thị số bài chưa ở trạng thái `done`. Khi một bài được ghi nhận
-hoàn tất trong Workflow, bài đó vẫn được giữ trong dữ liệu để bảo toàn Workflow
-và Lịch sử nhưng tự ẩn khỏi Kho ý tưởng. Nút **Xóa bài** chỉ xóa vĩnh viễn bài
-chưa giao sau khi người dùng xác nhận; bài đã giao hoặc đã hoàn tất không thể
-xóa bằng thao tác này.
+Bài `done` vẫn ở Workflow cho đến khi người dùng bấm **Bài tiếp theo**; lúc đó
+bài được chuyển vào **Kho lưu trữ**, ẩn khỏi Workflow và tự xóa sau 2 ngày.
 
 ### 4.3. Hoàn tác sao chép
 
@@ -225,8 +223,8 @@ Tab **Lịch sử & sao lưu** hỗ trợ:
 - khôi phục toàn bộ dữ liệu từ JSON;
 - xác nhận trước khi khôi phục vì thao tác khôi phục ghi đè toàn bộ cơ sở dữ liệu.
 
-JSON v2 tương thích hai chiều với dữ liệu desktop thangmia cũ. File desktop gốc
-không bị ghi đè khi nhập vào web.
+Web vẫn có thể nhập bản sao lưu JSON v2 cũ để giữ dữ liệu, nhưng không còn
+ứng dụng desktop trong dự án. File sao lưu gốc không bị ghi đè khi nhập vào web.
 
 ### 4.7. Quản lý prompt TXT và kết quả Gemini
 
@@ -262,14 +260,30 @@ trả lỗi rõ ràng; trạng thái brief không thay đổi. Backup/restore JS
 trường `prompt_templates`; backup cũ không có trường này được coi là bốn mẫu
 trống.
 
-### 4.9. Kho ý tưởng
+### 4.9. Ý tưởng hiện tại và đồng bộ dữ liệu
 
-Menu **Kho ý tưởng** hiển thị tối đa 42 brief của ngày đang chọn, chia thành
-ba lane AI với tối đa 14 brief mỗi lane. Người dùng có thể tìm kiếm trong bảy
-trường brief, lọc theo trạng thái, sắp xếp theo vị trí/tiêu đề/trạng thái,
-xem đầy đủ nội dung và mở trình chỉnh sửa brief hiện có. Ghi chú riêng, cờ
-yêu thích và bản nháp được lưu cùng item trong SQLite; không tạo bản sao brief.
-Các item liên kết với Workflow bằng `uid`.
+Trang **Ý tưởng hiện tại** liệt kê các brief còn có thể dùng trong thư viện,
+bao gồm mẫu chưa dùng và ý tưởng đã bổ sung. Brief đã được phân cho bất kỳ ngày
+nào sẽ không xuất hiện trong danh sách này. Có thể tìm kiếm trong nội dung và
+lọc theo chủ đề; bộ đếm cập nhật theo số ý tưởng còn dùng được. Nút **Xóa toàn
+bộ ý tưởng** xóa các brief chưa dùng và toàn bộ bài Workflow đang hoạt động trên
+mọi ngày; các ngày lịch sử vẫn được giữ lại ở trạng thái rỗng. Kho lưu trữ,
+prompt và file TXT/ảnh trong Workspace không bị xóa. Ý tưởng đã xóa không được
+tái sử dụng. Dùng **Bổ sung ý tưởng** và chọn **Nạp 14 vào kho**; khi đủ 42
+brief mới (ba brief cho mỗi chủ đề), ứng dụng tự tạo một ngày Workflow mới và
+chia 14 bài cho mỗi AI.
+
+Khi tạo Workflow hoặc rà soát ý tưởng trong ngày, ứng dụng so sánh brief với
+các bài trong Kho lưu trữ và cảnh báo các cặp gần giống để người dùng kiểm tra.
+
+Màn hình **Kho ý tưởng** riêng (bảng 42 bài theo lane) đã được gỡ bỏ; các bài
+đã phân công được quản lý trực tiếp trong **Workflow**, còn các brief chưa phân
+công nằm ở **Ý tưởng hiện tại**. Tổng quan được tải lại khi đổi ngày; thư viện,
+lịch sử và kho lưu trữ chỉ được tải khi mở trang tương ứng hoặc sau thao tác
+làm thay đổi dữ liệu đó. Trong Workflow, trạng thái Workspace tự làm mới mỗi
+30 giây khi tab đang hiển thị; có thể yêu cầu làm mới ngay bằng nút **Làm mới file**.
+Số **ý tưởng còn lại** trên Trang chủ và Lịch sử được tính theo cùng danh sách
+chưa phân công với trang Ý tưởng hiện tại.
 
 Khi workspace đã có prompt, output hoặc ảnh cho brief, giao diện cảnh báo trước khi
 chỉnh sửa. Việc sửa brief không tự xóa, ghi đè hoặc thay đổi file TXT/output.
@@ -292,7 +306,7 @@ tải ảnh về máy; **Chép ảnh** chuyển ảnh về PNG trước khi dùn
 chép đường dẫn. Backend xác minh
 
 Khi một bài đã `done` và người dùng bấm **Bài tiếp theo**, bài đó được chuyển
-vào **Kho lưu trữ** và ẩn khỏi Workflow, Kho ý tưởng và các danh sách đang làm
+vào **Kho lưu trữ** và ẩn khỏi Workflow, Ý tưởng hiện tại và các danh sách đang làm
 việc. Bài lưu trữ tự động bị xóa khỏi database sau 2 ngày; trong thời gian đó
 người dùng vẫn có thể xem ngày, AI, tiêu đề và thời điểm lưu trữ, đồng thời bấm
 **Xem bài** để đọc lại đầy đủ 7 trường brief, truyện trả về và ảnh trả về ở chế
@@ -307,8 +321,12 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 |---|---|---|
 | GET | `/api/health` | Kiểm tra backend |
 | GET | `/api/overview?date=YYYY-MM-DD` | Lấy thẻ và thống kê của ngày; prompt được lấy riêng sau khi template đã cấu hình |
-| POST | `/api/days` | Tạo ngày và phân bổ 42 brief |
+| POST | `/api/days` | Tạo ngày, phân bổ 42 brief và cảnh báo brief gần giống Kho lưu trữ |
 | GET | `/api/history` | Lấy lịch sử các ngày |
+| GET | `/api/library` | Lấy danh sách ý tưởng chưa được phân vào ngày nào |
+| DELETE | `/api/library` | Xóa ý tưởng chưa dùng và bài Workflow đang hoạt động; giữ lịch sử rỗng và Kho lưu trữ |
+| POST | `/api/library/import` | Nạp 14 brief mới; sau khi xóa, tự tạo Workflow khi đủ 42 brief |
+| POST | `/api/library/reset` | Tạo kho 42 ý tưởng mới từ các ý tưởng chưa dùng |
 | GET | `/api/archive` | Lấy các bài đang lưu trữ; tự dọn bài quá 2 ngày |
 | GET | `/api/days/{date}/items/{uid}/prompt?mode=...` | Sinh prompt `full`, `part1` hoặc `part2` |
 | GET | `/api/prompt-templates` | Lấy bốn template và danh sách biến hợp lệ |
@@ -320,7 +338,7 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | POST | `/api/days/{date}/items/{uid}/toggle-done` | Đổi qua lại giữa `done` và `sent` |
 | POST | `/api/days/{date}/items/{uid}/archive` | Chuyển bài `done` vào Kho lưu trữ |
 | PATCH | `/api/days/{date}/items/{uid}/brief` | Cập nhật 7 trường nội dung |
-| GET | `/api/days/{date}/scan` | Rà trùng toàn bộ ngày |
+| GET | `/api/days/{date}/scan` | Rà trùng trong ngày và so sánh với Kho lưu trữ |
 | POST | `/api/days/{date}/items/{uid}/scan` | Rà trùng một brief, kể cả nội dung đang sửa |
 | GET | `/api/planning-prompt?date=...&ai=...` | Lấy prompt lập kế hoạch 14 brief |
 | POST | `/api/days/{date}/plan` | Nhập một batch 14 brief |
@@ -381,12 +399,12 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 15. Workspace tương đối, symbolic link hoặc file không có mapping hợp lệ bị từ chối.
 16. `npm run lint`, `npm run typecheck`, `npm run build` và bộ test API backend
     chạy thành công.
-17. Một lane xuất bằng nút mới tạo đúng 28 prompt TXT; `_image_prompt.txt`
-    không bị đếm nhầm là prompt truyện.
+17. Một lane xuất bằng nút mới tạo đúng hai file prompt cho mỗi brief còn lại
+    (tối đa 28 file khi lane đủ 14 brief); số thứ tự slot gốc được giữ nguyên.
 18. Web đọc đúng ảnh theo manifest, hiển thị thumbnail và chép dữ liệu ảnh
     thật; ảnh hỏng, sai MIME hoặc sai UID bị từ chối.
 
-## 8. Ngoài phạm vi phiên bản 3.2.0
+## 8. Ngoài phạm vi phiên bản 3.3.0
 
 - Tài khoản người dùng và phân quyền.
 - Hosting công khai và đồng bộ realtime.

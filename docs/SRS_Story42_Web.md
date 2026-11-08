@@ -1,7 +1,7 @@
 # SRS Update — THẮNG MIA
 
 **Edition:** 3.0.0 — 2026-11-07  
-**Base specification:** `SRS_Story42_Desktop.md` (desktop 2.0.0).  
+**Base specification:** This document describes the web application.
 **Migration policy:** preserve the existing brief selection, 14×3 assignment, prompt content, manual AI operation, no-finished-story storage, statuses, and JSON schema.
 
 ## 1. Changes of platform

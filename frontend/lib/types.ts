@@ -1,9 +1,16 @@
 export type Status = 'ready' | 'sent' | 'part1' | 'done';
 export type Mode = 'full' | 'part1' | 'part2';
-export type Tab = 'dashboard' | 'vault' | 'archive' | 'workflow' | 'planner' | 'history' | 'prompt-settings';
+export type Tab = 'dashboard' | 'current-ideas' | 'archive' | 'workflow' | 'planner' | 'history' | 'prompt-settings';
 export type BriefFields = {
   title: string; hero: string; antagonist: string; conflict: string;
   evidence: string; reversal: string; ending: string;
+};
+export type IdeaLibraryItem = BriefFields & { id: string; theme: string; source: string };
+export type IdeaLibraryData = {
+  items: IdeaLibraryItem[];
+  available_count: number;
+  theme_names: Record<string, string>;
+  theme_counts: Record<string, number>;
 };
 export type Story = BriefFields & {
   id: string; uid: string; slot: number; lane_slot?: number; ai: 1 | 2 | 3;
@@ -18,8 +25,16 @@ export type Overview = {
 };
 export type HistoryDay = { date: string; count: number; assigned: number; done: number };
 export type HistoryData = { days: HistoryDay[]; library_size: number; starter_used: number; starter_total: number };
-export type Pair = { score: number; first: { slot: number; title: string }; second: { slot: number; title: string } };
-export type Duplicate = { score: number; title: string; slot?: number };
+export type Pair = {
+  score: number;
+  first: { slot: number; title: string };
+  second: { slot: number; title: string; archived?: boolean; date?: string };
+};
+export type Duplicate = { score: number; title: string; slot?: number; archived?: boolean; date?: string };
+export type ArchiveDuplicate = {
+  item_uid?: string; item_slot?: number; item_title: string;
+  archive_date: string; archive_title: string; score: number;
+};
 export type PlanConflict = { code?: string; message?: string; alerts?: { line: number; score: number; title: string; other_title: string }[] };
 export type WorkspaceLane = { path: string; exists: boolean; readable: boolean; writable: boolean };
 export type WorkspaceConfig = { folder: string; exists: boolean; readable: boolean; writable: boolean; lanes: Record<string, WorkspaceLane> };

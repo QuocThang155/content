@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -53,6 +54,7 @@ def metrics(items):
 def purge_expired_archives(db):
     cutoff = dt.datetime.now() - dt.timedelta(days=2)
     removed = 0
+    retired_ids = set(db.get('retired_idea_ids', []))
     for day in db['days'].values():
         kept = []
         for item in day['items']:
@@ -64,10 +66,13 @@ def purge_expired_archives(db):
                     expired = False
                 if expired:
                     removed += 1
+                    if item.get('id'):
+                        retired_ids.add(item['id'])
                     continue
             kept.append(item)
         day['items'] = kept
     if removed:
+        db['retired_idea_ids'] = sorted(retired_ids)
         active_ids = {item.get('id') for day in db['days'].values() for item in day['items']}
         db['library'] = [item for item in db['library'] if item.get('id') in active_ids]
     return removed
@@ -80,6 +85,54 @@ def remaining_ideas(db):
         for item in day['items']
     )
     return max(0, len(db['library']) - copied)
+
+
+def available_library_items(db):
+    used_ids = core.archived_ids(db)
+    retired_ids = set(db.get('retired_idea_ids', []))
+    candidates = {brief['id']: brief for brief in core.seed_bank()}
+    candidates.update({brief['id']: brief for brief in db['library']})
+    return [
+        {key: brief.get(key, '') for key in core.KEYS}
+        | {'id': brief['id'], 'source': brief.get('source', 'imported')}
+        for brief in candidates.values()
+        if brief['id'] not in used_ids
+        and brief['id'] not in retired_ids
+        and brief.get('theme') in core.THEME_NAME
+    ]
+
+
+def next_workflow_date(db):
+    candidate = dt.date.today()
+    while candidate.isoformat() in db['days']:
+        candidate += dt.timedelta(days=1)
+    return candidate.isoformat()
+
+
+def archive_duplicate_alerts(db, items, threshold=.28):
+    archived = [
+        (date, item)
+        for date, day in db['days'].items()
+        for item in day.get('items', [])
+        if item.get('archived_at')
+    ]
+    alerts = []
+    for item in items:
+        for date, archived_item in archived:
+            if item.get('id') == archived_item.get('id'):
+                continue
+            score = core.similarity(item, archived_item)
+            if score >= threshold:
+                alerts.append({
+                    'item_uid': item.get('uid'),
+                    'item_slot': item.get('slot'),
+                    'item_title': item.get('title'),
+                    'archive_date': date,
+                    'archive_title': archived_item.get('title'),
+                    'score': score,
+                })
+    alerts.sort(key=lambda alert: alert['score'], reverse=True)
+    return alerts[:20]
 
 
 def validate_backup(raw):
@@ -183,11 +236,11 @@ class PromptPreview(BaseModel):
 
 def create_app(store: Store | None = None) -> FastAPI:
     database = store or Store(DEFAULT_PATH)
-    app = FastAPI(title='thangmia API', version='3.0.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
+    app = FastAPI(title='thangmia API', version='3.3.0', description='Điều phối 42 brief/ngày, không gọi API AI.')
 
     @app.get('/api/health')
     def health():
-        return {'ok': True, 'app': 'THẮNG MIA', 'version': '3.0.0'}
+        return {'ok': True, 'app': 'THẮNG MIA', 'version': '3.3.0'}
 
     @app.get('/api/overview')
     def overview(date: str = Query(...)):
@@ -203,9 +256,9 @@ def create_app(store: Store | None = None) -> FastAPI:
             result = {'date': date, 'exists': day is not None,
                       'items': public_items,
                       'stats': metrics(items),
-                      'theme_names': core.THEME_NAME, 'library_size': len(db['library']),
+                      'theme_names': core.THEME_NAME, 'library_size': len(available_library_items(db)),
                       'ideas_remaining': remaining_ideas(db),
-                      'starter_used': used_starters, 'starter_total': 84,
+                      'starter_used': used_starters, 'starter_total': len(core.seed_bank()),
                       'days_count': len(db['days'])}
         return result
 
@@ -213,24 +266,175 @@ def create_app(store: Store | None = None) -> FastAPI:
     def create_day(body: CreateDay):
         date = valid_date(body.date)
         with database.edit() as db:
+            purge_expired_archives(db)
             if date in db['days']:
                 raise HTTPException(409, 'Ngày làm việc đã tồn tại.')
             ok, message = core.new_day(db, date)
             if not ok:
                 raise HTTPException(409, message)
-        return {'message': message, 'date': date}
+            warnings = archive_duplicate_alerts(db, db['days'][date]['items'])
+        return {'message': message, 'date': date, 'archive_duplicates': warnings}
 
     @app.get('/api/history')
     def history():
-        db = database.read()
+        with database.edit() as db:
+            purge_expired_archives(db)
         result = []
         for date, day in sorted(db['days'].items(), reverse=True):
             items = [item for item in day['items'] if not item.get('archived_at')]
             result.append({'date': date, 'count': len(items),
                            'assigned': sum(x.get('status') in ('sent', 'part1', 'done') for x in items),
                            'done': sum(x.get('status') == 'done' for x in items)})
-        return {'days': result, 'library_size': len(db['library']),
-                'starter_used': len(core.used_starter_ids(db)), 'starter_total': 84}
+        return {'days': result, 'library_size': len(available_library_items(db)),
+                'starter_used': len(core.used_starter_ids(db)),
+                'starter_total': len(core.seed_bank())}
+
+    @app.get('/api/library')
+    def idea_library():
+        with database.edit() as db:
+            purge_expired_archives(db)
+            items = available_library_items(db)
+        theme_order = {theme: index for index, (theme, _) in enumerate(core.THEMES)}
+        items.sort(key=lambda brief: (theme_order[brief['theme']], brief['title'].casefold()))
+        theme_counts = {theme: 0 for theme, _ in core.THEMES}
+        for brief in items:
+            theme_counts[brief['theme']] += 1
+        return {'items': items, 'available_count': len(items),
+                'theme_names': core.THEME_NAME, 'theme_counts': theme_counts,
+                'starter_total': len(core.seed_bank())}
+
+    @app.delete('/api/library')
+    def clear_idea_library():
+        with database.edit() as db:
+            purge_expired_archives(db)
+            archived_ids = {
+                item['id']
+                for day in db['days'].values()
+                for item in day.get('items', [])
+                if item.get('archived_at') and item.get('id')
+            }
+            retired_ids = set(db.get('retired_idea_ids', []))
+            candidates = {brief['id']: brief for brief in core.seed_bank()}
+            candidates.update({brief['id']: brief for brief in db['library']})
+            cleared_workflow_ids = set()
+            cleared_workflow_count = 0
+            for day in db['days'].values():
+                retained = []
+                for item in day.get('items', []):
+                    if item.get('archived_at'):
+                        retained.append(item)
+                    else:
+                        cleared_workflow_count += 1
+                        if item.get('id'):
+                            cleared_workflow_ids.add(item['id'])
+                day['items'] = retained
+            retired_ids.update(set(candidates) - archived_ids)
+            retired_ids.update(cleared_workflow_ids - archived_ids)
+            db['retired_idea_ids'] = sorted(retired_ids)
+            deleted_ids = set(candidates) - archived_ids
+            db['library'] = []
+            db['replenish_workflow'] = True
+        return {
+            'message': 'Đã xóa ý tưởng chưa dùng và các bài Workflow đang hoạt động.',
+            'deleted_count': len(deleted_ids),
+            'workflow_cleared_count': cleared_workflow_count,
+            'days_preserved': len(db['days']),
+        }
+
+    @app.post('/api/library/import')
+    def import_library_ideas(body: ImportPlan):
+        try:
+            batch = core.parse_planner(body.text, body.ai)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        with database.edit() as db:
+            purge_expired_archives(db)
+            candidates = {brief['id']: brief for brief in core.seed_bank()}
+            candidates.update({brief['id']: brief for brief in db['library']})
+            candidates.update({
+                item['id']: item
+                for day in db['days'].values()
+                for item in day['items']
+                if item.get('id')
+            })
+            existing_ideas = list(candidates.values())
+            alerts = []
+            for index, item in enumerate(batch):
+                rivals = core.unique_candidates(item, existing_ideas + batch[:index], limit=1)
+                if rivals and rivals[0][0] >= .48:
+                    score, other = rivals[0]
+                    alerts.append({
+                        'line': index + 1,
+                        'score': score,
+                        'title': item['title'],
+                        'other_title': other.get('title'),
+                    })
+            if alerts and not body.allow_similar:
+                raise HTTPException(409, {
+                    'code': 'similar_ideas',
+                    'message': 'Phát hiện brief gần giống theo từ khóa.',
+                    'alerts': alerts[:10],
+                })
+            for item in batch:
+                db['library'].append(
+                    {key: item[key] for key in core.KEYS}
+                    | {'id': item['id'], 'source': 'imported'}
+                )
+            library_size = len(batch)
+            workflow_date = None
+            workflow_warnings = []
+            if db.get('replenish_workflow'):
+                workflow_date = next_workflow_date(db)
+                ok, _ = core.new_day(db, workflow_date)
+                if ok:
+                    workflow_warnings = archive_duplicate_alerts(
+                        db, db['days'][workflow_date]['items']
+                    )
+                    db['replenish_workflow'] = False
+                else:
+                    workflow_date = None
+        return {
+            'message': f'Đã nạp {library_size} ý tưởng mới vào kho.',
+            'count': library_size,
+            'workflow_date': workflow_date,
+            'archive_duplicates': workflow_warnings,
+        }
+
+    @app.post('/api/library/reset')
+    def reset_idea_library():
+        with database.edit() as db:
+            purge_expired_archives(db)
+            used_ids = core.archived_ids(db)
+            retired_ids = set(db.get('retired_idea_ids', []))
+            available_by_theme = {theme: [] for theme, _ in core.THEMES}
+            candidates = {brief['id']: brief for brief in core.seed_bank()}
+            candidates.update({brief['id']: brief for brief in db['library']})
+            for brief in candidates.values():
+                if (brief['id'] not in used_ids and brief['id'] not in retired_ids
+                        and brief.get('theme') in available_by_theme):
+                    available_by_theme[brief['theme']].append(brief)
+
+            missing = [
+                f'{core.THEME_NAME[theme]}: còn {len(available)} / 3'
+                for theme, available in available_by_theme.items()
+                if len(available) < 3
+            ]
+            if missing:
+                raise HTTPException(
+                    409,
+                    'Không thể tạo kho mới gồm 42 ý tưởng chưa dùng; '
+                    'một số chủ đề đã hết mẫu: ' + '; '.join(missing),
+                )
+
+            db['library'] = [
+                brief
+                for theme, _ in core.THEMES
+                for brief in available_by_theme[theme][:3]
+            ]
+            library_size = len(db['library'])
+        return {'message': 'Đã tạo kho mới gồm 42 ý tưởng chưa dùng.',
+                'library_size': library_size, 'added': library_size,
+                'starter_total': len(core.seed_bank())}
 
     @app.post('/api/workspace/export')
     def export_workspace(body: WorkspaceExport):
@@ -491,10 +695,53 @@ def create_app(store: Store | None = None) -> FastAPI:
             item = get_item(db, date, uid)
             if item['status'] != 'ready':
                 raise HTTPException(409, 'Chỉ có thể xóa bài chưa giao.')
-            day['items'] = [candidate for candidate in day['items'] if candidate.get('uid') != uid]
+
+            used_ids = core.archived_ids(db)
+            retired_ids = set(db.get('retired_idea_ids', []))
+            available = {
+                brief['id']: brief
+                for brief in core.seed_bank()
+                if brief['id'] not in used_ids
+                and brief['id'] not in retired_ids
+                and brief['theme'] == item['theme']
+            }
+            available.update({
+                brief['id']: brief
+                for brief in db['library']
+                if brief.get('id') not in used_ids
+                and brief.get('id') not in retired_ids
+                and brief.get('theme') == item['theme']
+            })
+            replacement_brief = next(iter(available.values()), None)
+            if replacement_brief is None:
+                raise HTTPException(
+                    409,
+                    f'Không còn ý tưởng chưa dùng thuộc chủ đề {core.THEME_NAME.get(item["theme"], item["theme"])} '
+                    'để bù vào slot này. Hãy bổ sung ý tưởng mới trước khi xóa.',
+                )
+
+            replacement = dict(replacement_brief)
+            replacement.update({
+                'uid': str(uuid.uuid4()),
+                'ai': item['ai'],
+                'slot': item['slot'],
+                'status': 'ready',
+                'notes': '',
+                'favorite': False,
+                'draft': False,
+            })
+            if not any(brief.get('id') == replacement['id'] for brief in db['library']):
+                db['library'].append({key: replacement[key] for key in core.KEYS}
+                                     | {'id': replacement['id'], 'source': replacement.get('source', 'starter')})
+            db.setdefault('retired_idea_ids', []).append(item['id'])
+            day['items'] = [
+                replacement if candidate.get('uid') == uid else candidate
+                for candidate in day['items']
+            ]
             db['library'] = [brief for brief in db['library'] if brief.get('id') != item.get('id')]
             remaining = remaining_ideas(db)
-        return {'message': 'Đã xóa bài khỏi Kho ý tưởng.', 'ideas_remaining': remaining}
+        return {'message': 'Đã xóa bài và bổ sung ý tưởng mới vào đúng slot.',
+                'item': replacement, 'ideas_remaining': remaining}
 
     @app.patch('/api/days/{date}/items/{uid}/brief')
     def edit_brief(date: str, uid: str, body: BriefEdit):
@@ -519,7 +766,12 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get('/api/days/{date}/scan')
     def scan_day(date: str, threshold: float = Query(.28, ge=.0, le=1.0)):
         valid_date(date)
-        items = get_day(database.read(), date)['items']
+        with database.edit() as db:
+            purge_expired_archives(db)
+        items = [
+            item for item in get_day(db, date)['items']
+            if not item.get('archived_at')
+        ]
         pairs = []
         for i, a in enumerate(items):
             for b in items[i+1:]:
@@ -527,7 +779,35 @@ def create_app(store: Store | None = None) -> FastAPI:
                 if score >= threshold:
                     pairs.append({'score': score, 'first': {'slot': a['slot'], 'title': a['title']},
                                   'second': {'slot': b['slot'], 'title': b['title']}})
-        pairs.sort(key=lambda x: x['score'], reverse=True)
+        archived = [
+            (archived_date, item)
+            for archived_date, day in db['days'].items()
+            for item in day.get('items', [])
+            if item.get('archived_at')
+        ]
+        for item in items:
+            for archived_date, archived_item in archived:
+                if item.get('id') == archived_item.get('id'):
+                    continue
+                score = core.similarity(item, archived_item)
+                if score >= threshold:
+                    pairs.append({
+                        'score': score,
+                        'first': {'slot': item['slot'], 'title': item['title']},
+                        'second': {
+                            'slot': archived_item['slot'],
+                            'title': archived_item['title'],
+                            'archived': True,
+                            'date': archived_date,
+                        },
+                    })
+        pairs.sort(
+            key=lambda pair: (
+                bool(pair['second'].get('archived')),
+                pair['score'],
+            ),
+            reverse=True,
+        )
         return {'pairs': pairs[:20], 'total': len(pairs), 'method': 'lexical-jaccard'}
 
     @app.post('/api/days/{date}/items/{uid}/scan')

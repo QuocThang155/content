@@ -24,6 +24,11 @@ class ApiTests(unittest.TestCase):
     def create(self, date=None):
         return self.client.post('/api/days', json={'date': date or self.date})
 
+    def test_health_reports_release_version(self):
+        response = self.client.get('/api/health')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['version'], '3.3.0')
+
     @staticmethod
     def planner_lines():
         return '\n'.join(
@@ -34,9 +39,9 @@ class ApiTests(unittest.TestCase):
         )
 
     def test_seed_assignment_no_reuse(self):
-        self.assertEqual(len(self.store.read()['library']), 84)
+        self.assertEqual(len(self.store.read()['library']), 126)
         ids = set()
-        for date in (self.date, '2026-11-08'):
+        for date in (self.date, '2026-11-08', '2026-11-09'):
             response = self.create(date)
             self.assertEqual(response.status_code, 201, response.text)
             overview = self.client.get('/api/overview', params={'date': date}).json()
@@ -48,9 +53,205 @@ class ApiTests(unittest.TestCase):
             current = {x['id'] for x in overview['items']}
             self.assertFalse(current & ids)
             ids.update(current)
-        self.assertEqual(len(ids), 84)
-        self.assertEqual(self.create('2026-11-09').status_code, 409)
+        self.assertEqual(len(ids), 126)
+        self.assertEqual(self.create('2026-11-10').status_code, 409)
         self.assertEqual(self.create(self.date).status_code, 409)
+
+    def test_current_idea_library_shows_only_unassigned_ideas(self):
+        response = self.client.get('/api/library')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['available_count'], 126)
+
+        self.create()
+        assigned_ids = core.archived_ids(self.store.read())
+        response = self.client.get('/api/library')
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['available_count'], 84)
+        self.assertEqual(
+            self.client.get('/api/overview', params={'date': self.date}).json()['library_size'],
+            84,
+        )
+        self.assertEqual(self.client.get('/api/history').json()['library_size'], 84)
+        self.assertFalse(assigned_ids & {item['id'] for item in response.json()['items']})
+        self.assertEqual(set(response.json()['theme_counts']), {theme for theme, _ in core.THEMES})
+
+    def test_clear_current_ideas_resets_workflow_then_allocates_new_ideas(self):
+        self.assertEqual(self.create().status_code, 201)
+        self.assertEqual(self.create('2026-11-08').status_code, 201)
+        original = self.client.get('/api/overview', params={'date': self.date}).json()
+        archived = original['items'][0]
+        archive_url = f'/api/days/{self.date}/items/{archived["uid"]}'
+        self.assertEqual(
+            self.client.post(archive_url + '/copied', json={'mode': 'full'}).status_code,
+            200,
+        )
+        self.assertEqual(self.client.post(archive_url + '/toggle-done').status_code, 200)
+        self.assertEqual(self.client.post(archive_url + '/archive').status_code, 200)
+        archived_ids_before = {
+            item['id'] for item in self.client.get('/api/archive').json()['items']
+        }
+        self.assertEqual(self.client.get('/api/library').json()['available_count'], 42)
+
+        cleared = self.client.delete('/api/library')
+
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(cleared.json()['workflow_cleared_count'], 83)
+        self.assertEqual(cleared.json()['days_preserved'], 2)
+        self.assertEqual(self.client.get('/api/library').json()['available_count'], 0)
+        self.assertEqual(self.client.post('/api/library/reset').status_code, 409)
+        emptied = self.client.get('/api/overview', params={'date': self.date}).json()
+        self.assertEqual(emptied['items'], [])
+        self.assertEqual(emptied['stats']['total'], 0)
+        self.assertEqual(
+            {item['id'] for item in self.client.get('/api/archive').json()['items']},
+            archived_ids_before,
+        )
+
+        duplicate_line = (
+            f'01 || {archived["title"]} || {archived["hero"]} || {archived["antagonist"]} || '
+            f'{archived["conflict"]} || {archived["evidence"]} || {archived["reversal"]} || {archived["ending"]}'
+        )
+        planned_batch = '\n'.join([duplicate_line, *self.planner_lines().splitlines()[1:]])
+
+        created_workflow = None
+        for expected_count, expected_workflow_count in ((14, 0), (28, 0), (0, 42)):
+            imported = self.client.post('/api/library/import', json={
+                'ai': 1,
+                'text': planned_batch,
+                'allow_similar': True,
+            })
+            self.assertEqual(imported.status_code, 200, imported.text)
+            self.assertEqual(
+                self.client.get('/api/library').json()['available_count'],
+                expected_count,
+            )
+            if expected_workflow_count:
+                created_workflow = imported.json()
+                self.assertEqual(
+                    self.client.get('/api/overview', params={
+                        'date': created_workflow['workflow_date'],
+                    }).json()['stats']['total'],
+                    expected_workflow_count,
+                )
+
+        self.assertIsNotNone(created_workflow)
+        self.assertTrue(created_workflow['workflow_date'])
+        self.assertTrue(any(
+            warning['archive_title'] == archived['title']
+            for warning in created_workflow['archive_duplicates']
+        ))
+        new_items = self.client.get('/api/overview', params={
+            'date': created_workflow['workflow_date'],
+        }).json()['items']
+        self.assertEqual(len(new_items), 42)
+        self.assertTrue(all(item['id'].startswith('CUSTOM-') for item in new_items))
+
+        scan = self.client.get('/api/days/' + created_workflow['workflow_date'] + '/scan')
+        self.assertEqual(scan.status_code, 200, scan.text)
+        self.assertTrue(any(
+            pair['second'].get('archived')
+            and pair['second']['title'] == archived['title']
+            for pair in scan.json()['pairs']
+        ))
+
+    def test_day_creation_warns_about_similar_archived_stories(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        base = f'/api/days/{self.date}/items/{item["uid"]}'
+        self.client.post(base + '/copied', json={'mode': 'full'})
+        self.client.post(base + '/toggle-done')
+        self.client.post(base + '/archive')
+        duplicate_line = (
+            f'01 || {item["title"]} || {item["hero"]} || {item["antagonist"]} || '
+            f'{item["conflict"]} || {item["evidence"]} || {item["reversal"]} || {item["ending"]}'
+        )
+        planned_batch = '\n'.join([duplicate_line, *self.planner_lines().splitlines()[1:]])
+        with self.store.edit() as db:
+            db['retired_idea_ids'] = sorted({
+                *db['retired_idea_ids'],
+                *(brief['id'] for brief in core.seed_bank()),
+            })
+            db['library'] = [
+                {key: idea[key] for key in core.KEYS}
+                | {'id': idea['id'], 'source': 'imported'}
+                for _ in range(3)
+                for idea in core.parse_planner(planned_batch, 1)
+            ]
+
+        created = self.create('2026-11-08')
+
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertTrue(any(
+            warning['archive_title'] == item['title']
+            for warning in created.json()['archive_duplicates']
+        ))
+
+    def test_expired_archived_ideas_do_not_return_to_current_pool(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        with self.store.edit() as db:
+            archived = next(
+                entry for entry in db['days'][self.date]['items']
+                if entry['uid'] == item['uid']
+            )
+            archived['archived_at'] = '2020-01-01T00:00:00'
+
+        response = self.client.get('/api/library')
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn(item['id'], {idea['id'] for idea in response.json()['items']})
+        self.assertIn(item['id'], self.store.read()['retired_idea_ids'])
+
+    def test_reset_idea_library_replaces_only_with_unused_starters(self):
+        self.create()
+        self.create('2026-11-08')
+        items = self.client.get('/api/overview', params={'date': self.date}).json()['items']
+        archived = items[0]
+        base = f'/api/days/{self.date}/items/{archived["uid"]}'
+        self.client.post(base + '/copied', json={'mode': 'full'})
+        self.client.post(base + '/toggle-done')
+        self.assertEqual(self.client.post(base + '/archive').status_code, 200)
+
+        saved_template = self.client.put(
+            '/api/prompt-templates/full', json={'content': 'FULL {{title}}'}
+        )
+        self.assertEqual(saved_template.status_code, 200)
+        reset = self.client.post('/api/library/reset')
+
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertEqual(reset.json()['library_size'], 42)
+        db = self.store.read()
+        library_ids = {brief['id'] for brief in db['library']}
+        used_ids = core.archived_ids(db)
+        self.assertEqual(len(library_ids), 42)
+        self.assertFalse(library_ids & used_ids)
+        self.assertEqual(len({brief['theme'] for brief in db['library']}), 14)
+        next_day = self.create('2026-11-09')
+        self.assertEqual(next_day.status_code, 201, next_day.text)
+        next_items = self.client.get('/api/overview', params={
+            'date': '2026-11-09',
+        }).json()['items']
+        self.assertEqual(len(next_items), 42)
+        self.assertEqual(len(self.client.get('/api/archive').json()['items']), 1)
+        self.assertEqual(
+            self.client.get('/api/overview', params={'date': self.date}).json()['stats']['total'],
+            41,
+        )
+        self.assertEqual(db['prompt_templates']['full'], 'FULL {{title}}')
+
+    def test_reset_idea_library_refuses_when_all_126_starters_are_used(self):
+        self.create()
+        self.create('2026-11-08')
+        self.create('2026-11-09')
+        before = self.store.read()['library']
+
+        reset = self.client.post('/api/library/reset')
+
+        self.assertEqual(reset.status_code, 409)
+        self.assertEqual(self.store.read()['library'], before)
+        self.assertEqual(self.client.get('/api/overview', params={'date': self.date})
+                         .json()['stats']['total'], 42)
 
     def test_prompt_status_and_edit(self):
         self.create()
@@ -129,7 +330,8 @@ class ApiTests(unittest.TestCase):
     def test_new_day_import_after_exhaust(self):
         self.create()
         self.create('2026-11-08')
-        new_date = '2026-11-09'
+        self.create('2026-11-09')
+        new_date = '2026-11-10'
         self.assertEqual(self.create(new_date).status_code, 409)
         for ai in (1,2,3):
             r = self.client.post(f'/api/days/{new_date}/plan', json={'ai':ai,'text':self.planner_lines(), 'allow_similar':True})
@@ -222,6 +424,37 @@ class ApiTests(unittest.TestCase):
             }).status_code, 200)
             self.assertEqual(self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]['status'], 'ready')
 
+    def test_workspace_status_keeps_replacement_and_ignores_archived_lane_slots(self):
+        self.create()
+        items = self.client.get('/api/overview', params={'date': self.date}).json()['items']
+        removed = items[0]
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            deleted = self.client.delete(f'/api/days/{self.date}/items/{removed["uid"]}')
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            status = self.client.get('/api/workspace/status', params={
+                'date': self.date, 'ai': removed['ai'],
+            })
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertEqual(len(status.json()['items']), 14)
+            self.assertIn(removed['lane_slot'], [item['slot'] for item in status.json()['items']])
+            replacement = next(item for item in self.client.get('/api/overview', params={
+                'date': self.date,
+            }).json()['items'] if item['slot'] == removed['slot'])
+            self.assertNotEqual(replacement['uid'], removed['uid'])
+
+            next_item = next(item for item in items if item['ai'] == removed['ai'] and item['uid'] != removed['uid'])
+            base = f'/api/days/{self.date}/items/{next_item["uid"]}'
+            self.client.post(base + '/copied', json={'mode': 'full'})
+            self.client.post(base + '/toggle-done')
+            self.assertEqual(self.client.post(base + '/archive').status_code, 200)
+            archived_status = self.client.get('/api/workspace/status', params={
+                'date': self.date, 'ai': removed['ai'],
+            })
+            self.assertEqual(archived_status.status_code, 200, archived_status.text)
+            self.assertEqual(len(archived_status.json()['items']), 13)
+
     def test_export_with_image_creates_two_prompt_files_and_reads_image(self):
         self.create()
         self.client.put('/api/prompt-templates/full', json={'content': 'FULL {{title}}'})
@@ -286,16 +519,49 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.json()['status'], 'done')
             self.assertEqual(self.client.post(base + '/output-copied').json()['status'], 'done')
 
-    def test_done_is_retained_and_ready_item_can_be_deleted(self):
+    def test_deleting_ready_item_replaces_it_and_keeps_lane_full(self):
         self.create()
         item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        used_ids = core.archived_ids(self.store.read())
         base = f'/api/days/{self.date}/items/{item["uid"]}'
-        self.assertEqual(self.client.delete(base).status_code, 200)
+        deleted = self.client.delete(base)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        replacement = deleted.json()['item']
+        self.assertNotEqual(replacement['uid'], item['uid'])
+        self.assertNotEqual(replacement['id'], item['id'])
+        self.assertNotIn(replacement['id'], used_ids)
+        self.assertEqual(replacement['theme'], item['theme'])
+        self.assertEqual(replacement['ai'], item['ai'])
+        self.assertEqual(replacement['slot'], item['slot'])
         overview = self.client.get('/api/overview', params={'date': self.date}).json()
-        self.assertFalse(any(candidate['uid'] == item['uid'] for candidate in overview['items']))
-        self.assertEqual(self.client.delete(base).status_code, 404)
+        self.assertEqual(overview['stats']['total'], 42)
+        self.assertTrue(any(candidate['uid'] == replacement['uid'] for candidate in overview['items']))
+        self.assertEqual(sum(candidate['ai'] == item['ai'] for candidate in overview['items']), 14)
+        self.assertNotIn(item['id'], {candidate['id'] for candidate in
+                                     self.client.get('/api/library').json()['items']})
+        db = self.store.read()
+        self.assertIn(item['id'], db['retired_idea_ids'])
+        self.assertNotIn(item['id'], {brief['id'] for brief in db['library']})
         remaining = self.client.get('/api/overview', params={'date': self.date}).json()['ideas_remaining']
-        self.assertEqual(remaining, 83)
+        self.assertEqual(remaining, 125)
+        self.assertEqual(self.client.post('/api/library/reset').status_code, 200)
+        self.assertNotIn(item['id'], {brief['id'] for brief in self.store.read()['library']})
+        self.assertEqual(self.client.delete(base).status_code, 404)
+
+    def test_delete_is_refused_when_no_unused_same_theme_idea_can_fill_slot(self):
+        self.create()
+        self.create('2026-11-08')
+        self.create('2026-11-09')
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        before = self.client.get('/api/overview', params={'date': self.date}).json()
+
+        response = self.client.delete(f'/api/days/{self.date}/items/{item["uid"]}')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('bổ sung ý tưởng mới', response.json()['detail'])
+        after = self.client.get('/api/overview', params={'date': self.date}).json()
+        self.assertEqual(after['stats']['total'], before['stats']['total'])
+        self.assertTrue(any(candidate['uid'] == item['uid'] for candidate in after['items']))
 
     def test_done_item_can_be_archived_and_expires_after_two_days(self):
         self.create()

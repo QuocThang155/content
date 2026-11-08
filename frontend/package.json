@@ -1,6 +1,6 @@
 {
   "name": "thangmia-frontend",
-  "version": "3.0.0",
+  "version": "3.3.0",
   "private": true,
   "scripts": {"dev": "next dev", "build": "next build", "start": "next start", "lint": "eslint .", "typecheck": "tsc --noEmit"},
   "dependencies": {"next": "^16.0.0", "react": "^19.2.0", "react-dom": "^19.2.0", "lucide-react": "^0.468.0"},
