@@ -222,6 +222,29 @@ class ApiTests(unittest.TestCase):
             }).status_code, 200)
             self.assertEqual(self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]['status'], 'ready')
 
+    def test_export_with_image_creates_two_prompt_files_and_reads_image(self):
+        self.create()
+        self.client.put('/api/prompt-templates/full', json={'content': 'FULL {{title}}'})
+        self.client.put('/api/prompt-templates/image', json={'content': 'IMAGE {{title}}'})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            response = self.client.post('/api/workspace/export-with-image',
+                                        json={'date': self.date, 'ai': 1})
+            self.assertEqual(response.status_code, 200, response.text)
+            lane = Path(directory) / 'AI1'
+            self.assertEqual(len(list(lane.glob(f'{self.date}_AI1_??.txt'))), 14)
+            self.assertEqual(len(list(lane.glob(f'{self.date}_AI1_??_image_prompt.txt'))), 14)
+            image = lane / f'{self.date}_AI1_01_image.png'
+            image.write_bytes(b'\x89PNG\r\n\x1a\n' + b'valid')
+            status = self.client.get('/api/workspace/status',
+                                     params={'date': self.date, 'ai': 1}).json()['items'][0]
+            self.assertTrue(status['image_exists'])
+            image_response = self.client.get('/api/workspace/image',
+                                              params={'date': self.date, 'ai': 1, 'slot': 1})
+            self.assertEqual(image_response.status_code, 200)
+            self.assertEqual(image_response.headers['content-type'], 'image/png')
+
     def test_missing_output_returns_status_not_server_error(self):
         self.create()
         self.client.put('/api/prompt-templates/full', json={'content': 'EXPORT {{title}}'})
@@ -246,13 +269,55 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()['exists'])
 
+    def test_copy_returned_output_marks_story_done(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        base = f'/api/days/{self.date}/items/{item["uid"]}'
+        self.client.put('/api/prompt-templates/full', json={'content': '{{title}}'})
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            'os.environ', {'THANGMIA_WORKSPACE_DIR': directory}
+        ):
+            self.assertEqual(self.client.post('/api/workspace/export',
+                json={'date': self.date, 'ai': item['ai']}).status_code, 200)
+            output = Path(directory) / 'AI1' / f'{self.date}_AI1_01_output.txt'
+            output.write_text('Returned story', encoding='utf-8')
+            response = self.client.post(base + '/output-copied')
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['status'], 'done')
+            self.assertEqual(self.client.post(base + '/output-copied').json()['status'], 'done')
+
+    def test_done_is_retained_and_ready_item_can_be_deleted(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        base = f'/api/days/{self.date}/items/{item["uid"]}'
+        self.assertEqual(self.client.delete(base).status_code, 200)
+        overview = self.client.get('/api/overview', params={'date': self.date}).json()
+        self.assertFalse(any(candidate['uid'] == item['uid'] for candidate in overview['items']))
+        self.assertEqual(self.client.delete(base).status_code, 404)
+        remaining = self.client.get('/api/overview', params={'date': self.date}).json()['ideas_remaining']
+        self.assertEqual(remaining, 83)
+
+    def test_done_item_can_be_archived_and_expires_after_two_days(self):
+        self.create()
+        item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
+        base = f'/api/days/{self.date}/items/{item["uid"]}'
+        self.client.post(base + '/copied', json={'mode': 'full'})
+        self.assertEqual(self.client.post(base + '/toggle-done').json()['status'], 'done')
+        archived = self.client.post(base + '/archive')
+        self.assertEqual(archived.status_code, 200)
+        self.assertEqual(len(self.client.get('/api/archive').json()['items']), 1)
+        self.assertEqual(self.client.get('/api/overview', params={'date': self.date}).json()['stats']['total'], 41)
+        with self.store.edit() as db:
+            db['days'][self.date]['items'][0]['archived_at'] = '2020-01-01T00:00:00'
+        self.assertEqual(self.client.get('/api/archive').json()['items'], [])
+
     def test_workspace_config_rejects_relative_path(self):
         response = self.client.put('/api/workspace/config', json={'folder': 'relative\\workspace'})
         self.assertEqual(response.status_code, 422)
 
     def test_prompt_templates_are_empty_and_validate_render_preview(self):
         self.assertEqual(self.client.get('/api/prompt-templates').json()['templates'],
-                         {'full': '', 'part1': '', 'part2': ''})
+                         {'full': '', 'part1': '', 'part2': '', 'image': ''})
         self.create()
         item = self.client.get('/api/overview', params={'date': self.date}).json()['items'][0]
         self.assertEqual(self.client.get(f'/api/days/{self.date}/items/{item["uid"]}/prompt').status_code, 409)

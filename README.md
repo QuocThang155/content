@@ -1,6 +1,6 @@
 # Đặc tả yêu cầu phần mềm — THẮNG MIA
 
-**Phiên bản:** 3.2.0
+**Phiên bản:** 3.3.0
 **Ngày cập nhật:** 08/11/2026
 **Trạng thái:** Đặc tả theo mã nguồn hiện tại
 
@@ -64,9 +64,9 @@ kiểm tra quyền đọc/ghi các thư mục `AI1`, `AI2` và `AI3` trước kh
 
 Mỗi lần xuất prompt, backend lưu manifest
 `.thangmia_manifest.json` trong workspace. Manifest ánh xạ ngày, lane, slot,
-`uid`, tên file prompt, tên file output, hash prompt, phiên bản prompt và hash
-output. File không có mapping hợp lệ hoặc có `uid` không khớp không được tự
-động gán cho brief.
+`uid`, tên hai file prompt, tên hai file kết quả, hash prompt, phiên bản prompt
+và hash output. File không có mapping hợp lệ hoặc có `uid` không khớp không
+được tự động gán cho brief.
 
 ## 3. Mô hình dữ liệu và quy tắc phân bổ
 
@@ -155,6 +155,10 @@ Người dùng có thể:
 12. Sao chép prompt `Full`, `Part 1` hoặc `Part 2` sau khi chỉnh sửa.
 13. Đánh dấu thẻ hoàn tất hoặc hoàn tác trạng thái hoàn tất.
 14. Xem và lọc số ý tưởng còn lại trong kho.
+15. Khi Extension đã trả về `_output.txt`, nhấn **Sao chép truyện trả về** để
+    sao chép nội dung truyện và ghi nhận thẻ là `done`.
+16. Trong **Kho ý tưởng**, xem số bài còn lại, xóa bài chưa giao và tự ẩn các
+    bài đã hoàn tất.
 
 Thao tác sao chép được thực hiện theo thứ tự:
 
@@ -164,6 +168,17 @@ Thao tác sao chép được thực hiện theo thứ tự:
 4. Cập nhật trạng thái và các bộ đếm trên giao diện mà không reload trang.
 
 Nếu trình duyệt từ chối clipboard, trạng thái thẻ không thay đổi.
+
+Với nút **Sao chép truyện trả về**, hệ thống đọc `_output.txt`, chỉ gọi API ghi
+nhận hoàn tất sau khi clipboard xác nhận thành công, rồi chuyển trạng thái thẻ
+sang `done`. Nếu file output chưa tồn tại hoặc clipboard thất bại, thẻ không
+được ghi nhận hoàn tất.
+
+Kho ý tưởng hiển thị số bài chưa ở trạng thái `done`. Khi một bài được ghi nhận
+hoàn tất trong Workflow, bài đó vẫn được giữ trong dữ liệu để bảo toàn Workflow
+và Lịch sử nhưng tự ẩn khỏi Kho ý tưởng. Nút **Xóa bài** chỉ xóa vĩnh viễn bài
+chưa giao sau khi người dùng xác nhận; bài đã giao hoặc đã hoàn tất không thể
+xóa bằng thao tác này.
 
 ### 4.3. Hoàn tác sao chép
 
@@ -233,7 +248,8 @@ và đổi tên atomic. Chỉ file `.txt` thuộc workspace và có mapping hợ
 
 ### 4.8. Cài đặt Prompt Template
 
-Menu **Cài đặt Prompt** lưu độc lập ba template `Full`, `Part 1` và `Part 2`
+Menu **Cài đặt Prompt** lưu độc lập bốn template `Full`, `Part 1`, `Part 2` và
+`Ảnh minh họa`
 trong tài liệu JSON của SQLite. Template mới mặc định là chuỗi rỗng; dữ liệu
 database cũ không được dùng để tự tạo hoặc import prompt. Chỉ bảy biến
 `{{title}}`, `{{hero}}`, `{{antagonist}}`, `{{conflict}}`, `{{evidence}}`,
@@ -243,7 +259,7 @@ khác bị từ chối, không có `eval()` hay thực thi nội dung template.
 Người dùng có thể nhập, lưu, xem trước sau khi thay biến, hủy thay đổi và xóa
 từng template. Khi template tương ứng chưa cấu hình, API prompt và xuất TXT
 trả lỗi rõ ràng; trạng thái brief không thay đổi. Backup/restore JSON giữ
-trường `prompt_templates`; backup cũ không có trường này được coi là ba mẫu
+trường `prompt_templates`; backup cũ không có trường này được coi là bốn mẫu
 trống.
 
 ### 4.9. Kho ý tưởng
@@ -255,8 +271,32 @@ xem đầy đủ nội dung và mở trình chỉnh sửa brief hiện có. Ghi 
 yêu thích và bản nháp được lưu cùng item trong SQLite; không tạo bản sao brief.
 Các item liên kết với Workflow bằng `uid`.
 
-Khi workspace đã có prompt hoặc output cho brief, giao diện cảnh báo trước khi
+Khi workspace đã có prompt, output hoặc ảnh cho brief, giao diện cảnh báo trước khi
 chỉnh sửa. Việc sửa brief không tự xóa, ghi đè hoặc thay đổi file TXT/output.
+
+### 4.10. Hai prompt và ảnh minh họa trong Workspace
+
+Khi xuất lane bằng nút **Xuất N prompt TXT**, Web tính theo số brief hiện có
+trong lane: mỗi brief tạo hai file độc lập, gồm một prompt truyện `.txt` và một prompt ảnh
+`_image_prompt.txt` cho mỗi brief. Template ảnh được cấu hình tại **Cài đặt
+Prompt → Ảnh minh họa**. API xuất Full cũ vẫn được giữ để tương thích.
+
+Extension chỉ đọc hai prompt này và tự tạo hai kết quả cạnh nhau:
+`_output.txt` cho truyện và `_image.png` (hoặc `.jpg`, `.jpeg`, `.webp`) cho ảnh.
+Web không tự gọi Gemini, không tạo ảnh và không chuyển trạng thái nghiệp vụ chỉ
+vì phát hiện output hoặc ảnh.
+
+Trong mỗi thẻ Workflow, Web hiển thị **Chưa có ảnh**, **Đã có ảnh** hoặc **Lỗi
+đọc ảnh**, kèm thumbnail khi ảnh hợp lệ. Nút **Xem ảnh** mở ảnh thật; **Chép
+ảnh** dùng dữ liệu ảnh qua Clipboard API, không chép đường dẫn. Backend xác minh
+manifest/UID, chữ ký MIME và phạm vi workspace trước khi đọc ảnh.
+
+Khi một bài đã `done` và người dùng bấm **Bài tiếp theo**, bài đó được chuyển
+vào **Kho lưu trữ** và ẩn khỏi Workflow, Kho ý tưởng và các danh sách đang làm
+việc. Bài lưu trữ tự động bị xóa khỏi database sau 2 ngày; trong thời gian đó
+người dùng vẫn có thể xem ngày, AI, tiêu đề và thời điểm lưu trữ, đồng thời bấm
+**Xem bài** để đọc lại đầy đủ 7 trường brief, truyện trả về và ảnh trả về ở chế
+độ chỉ đọc trong Kho lưu trữ.
 
 ## 5. Đặc tả API
 
@@ -269,14 +309,16 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | GET | `/api/overview?date=YYYY-MM-DD` | Lấy thẻ và thống kê của ngày; prompt được lấy riêng sau khi template đã cấu hình |
 | POST | `/api/days` | Tạo ngày và phân bổ 42 brief |
 | GET | `/api/history` | Lấy lịch sử các ngày |
+| GET | `/api/archive` | Lấy các bài đang lưu trữ; tự dọn bài quá 2 ngày |
 | GET | `/api/days/{date}/items/{uid}/prompt?mode=...` | Sinh prompt `full`, `part1` hoặc `part2` |
-| GET | `/api/prompt-templates` | Lấy ba template và danh sách biến hợp lệ |
+| GET | `/api/prompt-templates` | Lấy bốn template và danh sách biến hợp lệ |
 | PUT | `/api/prompt-templates/{mode}` | Lưu một template |
 | DELETE | `/api/prompt-templates/{mode}` | Xóa một template |
 | POST | `/api/prompt-templates/preview` | Xem trước template sau khi thay biến |
 | POST | `/api/days/{date}/items/{uid}/copied` | Ghi nhận sao chép thành công |
 | POST | `/api/days/{date}/items/{uid}/undo-copied` | Hoàn tác sao chép, đưa về `ready` |
 | POST | `/api/days/{date}/items/{uid}/toggle-done` | Đổi qua lại giữa `done` và `sent` |
+| POST | `/api/days/{date}/items/{uid}/archive` | Chuyển bài `done` vào Kho lưu trữ |
 | PATCH | `/api/days/{date}/items/{uid}/brief` | Cập nhật 7 trường nội dung |
 | GET | `/api/days/{date}/scan` | Rà trùng toàn bộ ngày |
 | POST | `/api/days/{date}/items/{uid}/scan` | Rà trùng một brief, kể cả nội dung đang sửa |
@@ -284,11 +326,13 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | POST | `/api/days/{date}/plan` | Nhập một batch 14 brief |
 | GET | `/api/backup` | Tải JSON schema v2 |
 | POST | `/api/restore` | Kiểm tra và thay thế dữ liệu bằng JSON schema v2 |
-| POST | `/api/workspace/export` | Xuất 14 prompt Full thành TXT cho một lane |
+| POST | `/api/workspace/export` | Xuất prompt Full TXT cho các brief chưa lưu trữ trong lane |
+| POST | `/api/workspace/export-with-image` | Xuất prompt truyện + prompt ảnh cho các brief chưa lưu trữ trong lane |
 | GET | `/api/workspace/config` | Xem workspace và quyền đọc/ghi |
 | PUT | `/api/workspace/config` | Xác nhận workspace tuyệt đối mới |
 | GET | `/api/workspace/status?date=...&ai=...` | Kiểm tra prompt/output theo 14 slot |
 | GET | `/api/workspace/file?date=...&ai=...&slot=...&kind=...` | Đọc prompt hoặc output |
+| GET | `/api/workspace/image?date=...&ai=...&slot=...` | Đọc ảnh thật theo manifest và UID |
 | PUT | `/api/workspace/file` | Sửa và lưu prompt/output có kiểm tra hash |
 | DELETE | `/api/workspace/file?date=...&ai=...&slot=...&kind=...` | Xóa prompt/output |
 
@@ -309,7 +353,7 @@ trạng thái hoặc thao tác ghi đè bị chặn.
   tuần tự hóa nhưng giao diện phải tải lại dữ liệu để thấy thay đổi từ client
   khác.
 - Ứng dụng không lưu toàn văn truyện hoàn chỉnh.
-- Prompt và output TXT được lưu ngoài SQLite trong workspace cục bộ; workspace
+- Prompt, output TXT và ảnh được lưu ngoài SQLite trong workspace cục bộ; workspace
   phải được đưa ra ngoài GitHub và không được commit vào repository.
 - Backend không tự động gọi Gemini hoặc kiểm tra độ dài truyện; Extension
   tiếp tục là thành phần đọc prompt và tạo output.
@@ -320,7 +364,7 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 
 1. Tạo hai ngày liên tiếp không tái sử dụng starter brief.
 2. Mỗi ngày có 42 thẻ, gồm 14 thẻ cho mỗi AI và 3 thẻ mỗi nhóm chủ đề.
-3. Ba template mới mặc định trống và không nạp prompt cũ.
+3. Bốn template `Full`, `Part 1`, `Part 2`, `Ảnh minh họa` mặc định trống và không nạp prompt cũ.
 4. Sao chép thành công cập nhật trạng thái; sao chép thất bại không cập nhật.
 5. Nhấn **Sao chép tiếp** không reload trang và cập nhật đúng bộ đếm.
 6. **Hoàn tác sao chép** chuyển `sent`/`part1` về `ready`, giảm thống kê và
@@ -337,6 +381,10 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 15. Workspace tương đối, symbolic link hoặc file không có mapping hợp lệ bị từ chối.
 16. `npm run lint`, `npm run typecheck`, `npm run build` và bộ test API backend
     chạy thành công.
+17. Một lane xuất bằng nút mới tạo đúng 28 prompt TXT; `_image_prompt.txt`
+    không bị đếm nhầm là prompt truyện.
+18. Web đọc đúng ảnh theo manifest, hiển thị thumbnail và chép dữ liệu ảnh
+    thật; ảnh hỏng, sai MIME hoặc sai UID bị từ chối.
 
 ## 8. Ngoài phạm vi phiên bản 3.2.0
 
@@ -345,5 +393,5 @@ trạng thái hoặc thao tác ghi đè bị chặn.
 - Tích hợp trực tiếp với API hoặc website AI.
 - Tự động đăng Facebook.
 - Phân tích ngữ nghĩa hoặc kiểm tra đạo văn.
-- Nhập, lưu trữ hoặc xử lý truyện hoàn chỉnh.
+- Nhập, lưu trữ hoặc xử lý truyện hoàn chỉnh trong SQLite.
 - Sửa đổi hoặc triển khai Chrome Extension.

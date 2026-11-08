@@ -204,7 +204,7 @@ def unique_candidates(item, candidates, limit=5):
 
 def default_db():
     return {'version': 2, 'library': seed_bank(), 'days': {}, 'history': [],
-            'prompt_templates': {'full': '', 'part1': '', 'part2': ''}}
+            'prompt_templates': {'full': '', 'part1': '', 'part2': '', 'image': ''}}
 
 
 def normalized_db(raw):
@@ -220,7 +220,7 @@ def normalized_db(raw):
     templates = raw.setdefault('prompt_templates', {})
     if not isinstance(templates, dict):
         raise ValueError('Cấu hình template prompt không hợp lệ.')
-    for mode in ('full', 'part1', 'part2'):
+    for mode in ('full', 'part1', 'part2', 'image'):
         value = templates.setdefault(mode, '')
         if not isinstance(value, str):
             raise ValueError(f'Template {mode} phải là chuỗi.')
@@ -306,7 +306,7 @@ def new_day(db, for_date):
     return True, 'Đã tạo 42 thẻ ý tưởng, mỗi AI nhận 14 thẻ.'
 
 
-PROMPT_MODES = ('full', 'part1', 'part2')
+PROMPT_MODES = ('full', 'part1', 'part2', 'image')
 PROMPT_VARIABLES = ('title', 'hero', 'antagonist', 'conflict', 'evidence', 'reversal', 'ending')
 PROMPT_VARIABLE_PATTERN = re.compile(r'\{\{([a-zA-Z0-9_]+)\}\}')
 

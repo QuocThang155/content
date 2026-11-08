@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
 import {
   Activity, AlertCircle, ArrowRight, BadgeCheck, BookOpen, CalendarDays, ChevronRight,
   Check, CheckCircle2, CircleHelp, Clipboard, CloudDownload,
   Database, Download, FileJson, FileText, Filter, History, LayoutDashboard,
-  Layers, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Search,
+  ImageIcon, Layers, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Search,
   Settings2, ShieldCheck, Sparkles, WandSparkles, X, Zap,
 } from 'lucide-react';
 import { api, ApiError, copyClipboard, download } from '@/lib/api';
@@ -71,6 +72,7 @@ export default function ThangMiaPage() {
   const [date, setDate] = useState(localToday);
   const [overview, setOverview] = useState<Overview>(emptyOverview);
   const [history, setHistory] = useState<HistoryData | null>(null);
+  const [archivedItems, setArchivedItems] = useState<(Story & { date: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -80,6 +82,13 @@ export default function ThangMiaPage() {
   const [vaultSort, setVaultSort] = useState<'slot' | 'title' | 'status'>('slot');
   const [vaultCollapsed, setVaultCollapsed] = useState<Record<1 | 2 | 3, boolean>>({ 1: false, 2: false, 3: false });
   const [editing, setEditing] = useState<Story | null>(null);
+  const [archiveViewer, setArchiveViewer] = useState<{
+    item: Story & { date: string };
+    output: WorkspaceFile | null;
+    imageUrl: string;
+    imageExists: boolean;
+    imageWarning?: string;
+  } | null>(null);
   const [form, setForm] = useState<BriefFields | null>(null);
   const [report, setReport] = useState<SimilarityReport | null>(null);
   const [plannerAi, setPlannerAi] = useState<1 | 2 | 3>(1);
@@ -92,10 +101,10 @@ export default function ThangMiaPage() {
   const [configOpen, setConfigOpen] = useState(false);
   const [configFolder, setConfigFolder] = useState('');
   const [fileViewer, setFileViewer] = useState<{
-    item: Story; kind: 'prompt' | 'output'; content: string; hash: string | null; filename: string; exists: boolean; warning?: string;
+    item: Story; kind: 'prompt' | 'image_prompt' | 'output'; content: string; hash: string | null; filename: string; exists: boolean; warning?: string;
   } | null>(null);
-  const [promptTemplates, setPromptTemplates] = useState<PromptTemplates>({ full: '', part1: '', part2: '' });
-  const [promptDrafts, setPromptDrafts] = useState<PromptTemplates>({ full: '', part1: '', part2: '' });
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplates>({ full: '', part1: '', part2: '', image: '' });
+  const [promptDrafts, setPromptDrafts] = useState<PromptTemplates>({ full: '', part1: '', part2: '', image: '' });
   const [promptMode, setPromptMode] = useState<PromptMode>('full');
   const [promptPreview, setPromptPreview] = useState('');
   const [promptPreviewUid, setPromptPreviewUid] = useState('');
@@ -159,6 +168,12 @@ export default function ThangMiaPage() {
   // This effect loads history when its tab becomes active.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (tab === 'history') void refreshHistory(); }, [tab, refreshHistory]);
+  useEffect(() => {
+    if (tab !== 'archive') return;
+    void api<{ items: (Story & { date: string })[] }>('/archive')
+      .then((result) => setArchivedItems(result.items))
+      .catch((err) => toast(messageOf(err), 'error'));
+  }, [tab]);
 
   async function execute(key: string, action: () => Promise<void>) {
     if (working) return;
@@ -189,6 +204,45 @@ export default function ThangMiaPage() {
     });
   }
 
+  async function copyReturnedStory(item: Story) {
+    await execute(`copy-output-${item.uid}`, async () => {
+      const result = await api<WorkspaceFile>(
+        `/workspace/file?date=${date}&ai=${item.ai}&slot=${laneSlot(item)}&kind=output`,
+      );
+      if (!result.exists) throw new Error('Chưa có truyện trả về để sao chép.');
+      await copyClipboard(result.content);
+      try {
+        const saved = await api<{ status: Story['status']; ideas_remaining: number }>(
+          `/days/${date}/items/${item.uid}/output-copied`, { method: 'POST' });
+        setOverview((current) => {
+          const items = current.items.map((currentItem) =>
+            currentItem.uid === item.uid ? { ...currentItem, status: saved.status } : currentItem);
+          return { ...current, items, stats: statsForItems(items), ideas_remaining: saved.ideas_remaining };
+        });
+        toast(`Đã sao chép truyện trả về · ${item.title}`);
+      } catch (err) {
+        toast('Đã sao chép truyện trả về nhưng chưa ghi nhận hoàn tất: ' + messageOf(err), 'error');
+      }
+    });
+  }
+
+  async function archiveDoneAndMove(ai: 1 | 2 | 3, item: Story | undefined, currentIndex: number, itemCount: number) {
+    await execute(`archive-next-${ai}`, async () => {
+      const wasDone = item?.status === 'done';
+      if (item?.status === 'done') {
+        await api(`/days/${date}/items/${item.uid}/archive`, { method: 'POST' });
+        setArchivedItems((current) => [...current, { ...item, date, archived_at: new Date().toISOString() }]);
+        await refresh(date, false);
+        toast(`Đã chuyển “${item.title}” vào Kho lưu trữ.`);
+      }
+      const nextCount = wasDone ? itemCount - 1 : itemCount;
+      const nextIndex = nextCount > 0
+        ? (wasDone ? currentIndex % nextCount : (currentIndex + 1) % nextCount)
+        : 0;
+      setLaneCursors((current) => ({ ...current, [ai]: nextIndex }));
+    });
+  }
+
   function copyNext(ai: number) {
     const item = overview.items.find((x) => x.ai === ai && x.status === 'ready');
     if (!item) return toast(`AI ${ai} không còn thẻ chưa giao.`, 'info');
@@ -200,6 +254,22 @@ export default function ThangMiaPage() {
       await api(`/days/${date}/items/${item.uid}/toggle-done`, { method: 'POST' });
       await refresh(date, false);
       toast(item.status === 'done' ? 'Đã hoàn tác.' : 'Đã đánh dấu hoàn tất.');
+    });
+  }
+
+  async function deleteIdea(item: Story) {
+    if (item.status !== 'ready') {
+      toast('Chỉ có thể xóa bài chưa giao.', 'error');
+      return;
+    }
+    if (!window.confirm(`Xóa vĩnh viễn bài “${item.title}” khỏi Kho ý tưởng?`)) return;
+    await execute(`delete-${item.uid}`, async () => {
+      const result = await api<{ ideas_remaining: number }>(`/days/${date}/items/${item.uid}`, { method: 'DELETE' });
+      setOverview((current) => {
+        const items = current.items.filter((candidate) => candidate.uid !== item.uid);
+        return { ...current, items, stats: statsForItems(items), ideas_remaining: result.ideas_remaining };
+      });
+      toast(`Đã xóa bài khỏi Kho ý tưởng · ${item.title}`);
     });
   }
 
@@ -345,14 +415,44 @@ export default function ThangMiaPage() {
       setPromptPreview(result.text);
     });
   }
+  function workspaceImageUrl(item: Story): string {
+    return `/api/workspace/image?date=${encodeURIComponent(date)}&ai=${item.ai}&slot=${laneSlot(item)}`;
+  }
+  function archiveImageUrl(item: Story & { date: string }): string {
+    return `/api/workspace/image?date=${encodeURIComponent(item.date)}&ai=${item.ai}&slot=${laneSlot(item)}`;
+  }
+  async function openArchiveViewer(item: Story & { date: string }) {
+    await execute(`archive-view-${item.uid}`, async () => {
+      const outputPromise = api<WorkspaceFile>(
+        `/workspace/file?date=${encodeURIComponent(item.date)}&ai=${item.ai}&slot=${laneSlot(item)}&kind=output`,
+      );
+      const imageUrl = archiveImageUrl(item);
+      const imagePromise = fetch(imageUrl, { cache: 'no-store' });
+      const [outputResult, imageResult] = await Promise.allSettled([outputPromise, imagePromise]);
+      const output = outputResult.status === 'fulfilled' ? outputResult.value : null;
+      const imageExists = imageResult.status === 'fulfilled' && imageResult.value.ok;
+      const imageWarning = imageExists ? undefined : 'Chưa có ảnh trả về trong workspace.';
+      setArchiveViewer({ item, output, imageUrl, imageExists, imageWarning });
+    });
+  }
+  async function copyReturnedImage(item: Story) {
+    await execute(`copy-image-${item.uid}`, async () => {
+      const response = await fetch(workspaceImageUrl(item), { cache: 'no-store' });
+      if (!response.ok) throw new Error('Chưa có ảnh trả về hoặc ảnh không hợp lệ.');
+      const blob = await response.blob();
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        throw new Error('Trình duyệt không hỗ trợ sao chép ảnh trực tiếp.');
+      }
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      toast(`Đã chép ảnh minh họa · ${item.title}`);
+    });
+  }
   async function exportLane(ai: 1 | 2 | 3) {
-    const existing = workspaceStatus[ai]?.some((entry) => entry.prompt_exists || entry.output_exists);
-    if (existing && !window.confirm(`AI ${ai} đã có file TXT hoặc output. Xuất lại sẽ bỏ qua file xung đột và không ghi đè. Tiếp tục?`)) return;
     await execute(`export-${ai}`, async () => {
-      const result = await api<{ written: number; skipped: number; folder: string }>('/workspace/export',
+      const result = await api<{ written: number; skipped: number; folder: string; prompt_files?: number }>('/workspace/export-with-image',
         { method: 'POST', body: JSON.stringify({ date, ai }) });
       await refreshWorkspace();
-      toast(`AI ${ai}: đã ghi ${result.written} file, bỏ qua ${result.skipped} file đã tồn tại.`);
+      toast(`AI ${ai}: đã xuất ${result.written} file TXT${result.skipped ? `, bỏ qua ${result.skipped} slot đã tồn tại` : ''}.`);
     });
   }
   async function openWorkspaceConfig() {
@@ -376,7 +476,7 @@ export default function ThangMiaPage() {
       toast(`Đã đổi workspace: ${result.folder}`);
     });
   }
-  async function openWorkspaceFile(item: Story, kind: 'prompt' | 'output') {
+  async function openWorkspaceFile(item: Story, kind: 'prompt' | 'image_prompt' | 'output') {
     const status = workspaceStatus[item.ai]?.find((entry) => entry.slot === laneSlot(item));
     try {
       const result = await api<WorkspaceFile>(`/workspace/file?date=${date}&ai=${item.ai}&slot=${laneSlot(item)}&kind=${kind}`);
@@ -385,7 +485,8 @@ export default function ThangMiaPage() {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
         setFileViewer({
           item, kind, content: '', hash: null,
-          filename: kind === 'prompt' ? (status?.prompt_filename || '') : (status?.output_filename || ''),
+          filename: kind === 'prompt' ? (status?.prompt_filename || '') :
+            kind === 'image_prompt' ? (status?.image_prompt_filename || '') : (status?.output_filename || ''),
           exists: false, warning: err.status === 409 ? err.message : undefined,
         });
         return;
@@ -495,6 +596,7 @@ export default function ThangMiaPage() {
   const navItems: { id: Tab; title: string; desc: string; icon: typeof LayoutDashboard }[] = [
     { id: 'dashboard', title: 'Trang chủ', desc: 'Tổng quan hệ thống', icon: LayoutDashboard },
     { id: 'vault', title: 'Kho ý tưởng', desc: '42 brief theo ngày', icon: Database },
+    { id: 'archive', title: 'Kho lưu trữ', desc: 'Bài đã hoàn tất', icon: CloudDownload },
     { id: 'workflow', title: 'Workflow', desc: 'Hàng đợi sản xuất', icon: Layers },
     { id: 'planner', title: 'Bổ sung ý tưởng', desc: '14 brief / AI', icon: WandSparkles },
     { id: 'history', title: 'Lịch sử & sao lưu', desc: 'Dữ liệu an toàn', icon: History },
@@ -511,7 +613,7 @@ export default function ThangMiaPage() {
         <div className="sidebar-section-label">MENU</div>
         <nav className="nav-list" aria-label="Điều hướng chính">
           {navItems.map(({id, title, desc, icon: Icon}) => (
-            <button key={id} onClick={() => { setTab(id); setSidebarOpen(false); }} className={`nav-link ${tab === id ? 'active' : ''}`}>
+            <button key={id} onClick={() => { setTab(id); if (id === 'vault') setFilter('all'); setSidebarOpen(false); }} className={`nav-link ${tab === id ? 'active' : ''}`}>
               <Icon size={20}/><span className="nav-text"><strong>{title}</strong><small>{desc}</small></span>
               {tab === id && <span className="nav-active-dot"/>}
             </button>
@@ -554,13 +656,13 @@ export default function ThangMiaPage() {
 
           {tab === 'vault' && <>
             <section className="workflow-section vault-page">
-              <div className="section-heading"><div><div className="eyebrow muted">IDEA VAULT</div><h2>Kho ý tưởng <span className="num-badge">42 brief</span></h2><p>Xem, tìm kiếm, chỉnh sửa và ghi chú brief theo ngày. Dữ liệu dùng chung với Workflow.</p></div>
+              <div className="section-heading"><div><div className="eyebrow muted">IDEA VAULT</div><h2>Kho ý tưởng <span className="num-badge">{overview.items.filter((item) => item.status !== 'done').length} bài còn lại</span> <span className="num-badge">{overview.stats.done} đã hoàn tất</span></h2><p>Xem, tìm kiếm và chỉnh sửa brief chưa hoàn tất. Bài đã hoàn tất được giữ trong Workflow và Lịch sử nhưng tự ẩn khỏi kho.</p></div>
                 <div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày kho ý tưởng" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới kho ý tưởng" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
               <div className="filter-row"><div className="search-box"><Search size={17}/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm trong 7 trường brief..." aria-label="Tìm ý tưởng" />{search && <button aria-label="Xóa tìm kiếm" onClick={() => setSearch('')}><X size={14}/></button>}</div>
-                <div className="filter-pills"><Filter size={16}/>{([['all','Tất cả'],['ready','Chưa giao'],['active','Đang xử lý'],['done','Hoàn tất']] as const).map(([key,label]) => <button key={key} onClick={() => setFilter(key)} className={filter === key ? 'selected':''}>{label}</button>)}</div>
+                <div className="filter-pills"><Filter size={16}/>{([['all','Tất cả'],['ready','Chưa giao'],['active','Đang xử lý']] as const).map(([key,label]) => <button key={key} onClick={() => setFilter(key)} className={filter === key ? 'selected':''}>{label}</button>)}</div>
                 <select className="vault-sort" value={vaultSort} onChange={(e) => setVaultSort(e.target.value as typeof vaultSort)}><option value="slot">Sắp xếp vị trí</option><option value="title">Sắp xếp tiêu đề</option><option value="status">Sắp xếp trạng thái</option></select></div>
               <div className="vault-grid">{([1,2,3] as const).map((ai) => {
-                const items = visibleItems.filter((item) => item.ai === ai).sort((a, b) =>
+                const items = visibleItems.filter((item) => item.ai === ai && item.status !== 'done').sort((a, b) =>
                   vaultSort === 'title' ? a.title.localeCompare(b.title) :
                   vaultSort === 'status' ? a.status.localeCompare(b.status) : a.slot - b.slot);
                 return <section className={`vault-lane ${vaultCollapsed[ai] ? 'collapsed' : ''}`} key={ai}><div className="vault-lane-head"><strong>AI {ai}</strong><span>{items.length} / 14</span><button type="button" className="small-button vault-collapse" onClick={() => setVaultCollapsed((current) => ({ ...current, [ai]: !current[ai] }))}>{vaultCollapsed[ai] ? 'Mở rộng' : 'Thu gọn'}</button></div>
@@ -570,7 +672,7 @@ export default function ThangMiaPage() {
                       <div className="card-meta"><span className="card-index">#{String(laneSlot(item)).padStart(2, '0')}</span><span>{overview.theme_names[item.theme] || item.theme}</span><span className={`status-pill ${item.status}`}>{STATUSES[item.status]}</span></div>
                       <h3>{item.title}</h3>
                       <div className="vault-fields">{FIELD_LABELS.map(({key, label}) => <div key={key}><b>{label}</b><span>{item[key]}</span></div>)}</div>
-                      <div className="vault-meta-actions"><button className={`small-button ${item.favorite ? 'favorite-active' : ''}`} onClick={() => void updateMetadata(item, { favorite: !item.favorite })}>★ {item.favorite ? 'Đã thích' : 'Yêu thích'}</button><button className="small-button" onClick={() => void updateMetadata(item, { draft: !item.draft })}>{item.draft ? 'Bản nháp' : 'Đánh dấu nháp'}</button><button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa</button></div>
+                      <div className="vault-meta-actions"><button className={`small-button ${item.favorite ? 'favorite-active' : ''}`} onClick={() => void updateMetadata(item, { favorite: !item.favorite })}>★ {item.favorite ? 'Đã thích' : 'Yêu thích'}</button><button className="small-button" onClick={() => void updateMetadata(item, { draft: !item.draft })}>{item.draft ? 'Bản nháp' : 'Đánh dấu nháp'}</button><button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa</button><button className="small-button vault-delete" onClick={() => void deleteIdea(item)} disabled={!!working}><X size={14}/> Xóa bài</button></div>
                       <textarea className="vault-notes" value={item.notes || ''} onChange={(e) => setOverview((current) => ({ ...current, items: current.items.map((candidate) => candidate.uid === item.uid ? { ...candidate, notes: e.target.value } : candidate) }))} onBlur={(e) => void updateMetadata(item, { notes: e.target.value })} placeholder="Ghi chú riêng..." rows={2}/>
                       {fileStatus?.prompt_exists || fileStatus?.output_exists ? <div className="vault-warning"><AlertCircle size={14}/> Đã có file TXT/output; chỉnh sửa không tự xóa hoặc ghi đè file cũ.</div> : null}
                     </article>;
@@ -580,13 +682,30 @@ export default function ThangMiaPage() {
             </section>
           </>}
 
+          {tab === 'archive' && <>
+            <section className="workflow-section vault-page archive-page">
+              <div className="section-heading"><div><div className="eyebrow muted">ARCHIVE</div><h2>Kho lưu trữ <span className="num-badge">{archivedItems.length} bài</span></h2><p>Bài hoàn tất được chuyển vào đây khi bấm Bài tiếp theo và tự xóa sau 2 ngày.</p></div>
+                <button className="icon-button" aria-label="Làm mới kho lưu trữ" onClick={() => void api<{ items: (Story & { date: string })[] }>('/archive').then((result) => setArchivedItems(result.items)).catch((err) => toast(messageOf(err), 'error'))}><RefreshCw size={18}/></button></div>
+              <div className="vault-grid archive-grid">{archivedItems.length ? archivedItems.map((item) =>
+                <article className="vault-card archive-card" key={`${item.date}-${item.uid}`}>
+                  <div className="card-meta"><span>{prettyDate(item.date)}</span><span className="card-index">AI {item.ai} · #{String(laneSlot(item)).padStart(2, '0')}</span><span className="status-pill done">Đã lưu trữ</span></div>
+                  <h3>{item.title}</h3>
+                  <p className="card-conflict">{item.conflict}</p>
+                  <button type="button" className="small-button" onClick={() => void openArchiveViewer(item)}><FileText size={14}/> Xem bài</button>
+                  <small>Tự xóa sau 2 ngày kể từ {item.archived_at ? new Date(item.archived_at).toLocaleString('vi-VN') : ''}</small>
+                </article>
+              ) : <div className="lane-empty"><Database size={28}/><strong>Kho lưu trữ đang trống</strong><span>Các bài hoàn tất sẽ xuất hiện khi chuyển sang bài tiếp theo.</span></div>}</div>
+            </section>
+          </>}
+
           {tab === 'prompt-settings' && <>
-            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> PROMPT TEMPLATE SETTINGS</div><h1>Cài đặt <span>Prompt</span></h1><p>Tự nhập và lưu độc lập ba template. Ứng dụng không cung cấp prompt mặc định.</p></div>
+            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> PROMPT TEMPLATE SETTINGS</div><h1>Cài đặt <span>Prompt</span></h1>            <p>Tự nhập và lưu độc lập bốn template. Ứng dụng không cung cấp prompt mặc định.</p></div>
               <button className="icon-button" aria-label="Tải lại template" title="Tải lại" onClick={() => void loadPromptTemplates()}><RefreshCw size={18}/></button></div>
             <section className="panel prompt-settings-panel">
-              <div className="filter-pills">{(['full','part1','part2'] as PromptMode[]).map((mode) =>
-                <button key={mode} className={promptMode === mode ? 'selected' : ''} onClick={() => { setPromptMode(mode); setPromptPreview(''); }}>{mode === 'full' ? 'Full' : mode === 'part1' ? 'Part 1' : 'Part 2'}</button>)}</div>
+              <div className="filter-pills">{(['full','part1','part2','image'] as PromptMode[]).map((mode) =>
+                <button key={mode} className={promptMode === mode ? 'selected' : ''} onClick={() => { setPromptMode(mode); setPromptPreview(''); }}>{mode === 'full' ? 'Full' : mode === 'part1' ? 'Part 1' : mode === 'part2' ? 'Part 2' : 'Ảnh minh họa'}</button>)}</div>
               <p>Template hiện tại: {promptTemplates[promptMode].trim() ? 'Đã cấu hình' : 'Chưa cấu hình'}. Biến hợp lệ: <code>{'{{title}}'}</code>, <code>{'{{hero}}'}</code>, <code>{'{{antagonist}}'}</code>, <code>{'{{conflict}}'}</code>, <code>{'{{evidence}}'}</code>, <code>{'{{reversal}}'}</code>, <code>{'{{ending}}'}</code>.</p>
+              {promptMode === 'image' && <p className="muted">Nên yêu cầu AI tạo ảnh dựa trên truyện vừa viết trong cùng hội thoại.</p>}
               <div className="view-controls"><label>Brief xem trước <select value={promptPreviewUid || overview.items[0]?.uid || ''} onChange={(e) => { setPromptPreviewUid(e.target.value); setPromptPreview(''); }}><option value="">Chưa có brief</option>{overview.items.map((item) => <option key={item.uid} value={item.uid}>AI {item.ai} · #{String(laneSlot(item)).padStart(2, '0')} · {item.title}</option>)}</select></label></div>
               <textarea className="plan-textarea" rows={12} value={promptDrafts[promptMode]} onChange={(e) => { setPromptDrafts((current) => ({ ...current, [promptMode]: e.target.value })); setPromptPreview(''); }} placeholder="Nhập toàn bộ câu lệnh tại đây..." spellCheck={false} />
               <div className="dialog-actions"><button className="button secondary" onClick={() => setPromptDrafts((current) => ({ ...current, [promptMode]: promptTemplates[promptMode] }))} disabled={promptDrafts[promptMode] === promptTemplates[promptMode]}><RotateCcw size={16}/> Hủy thay đổi</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => void deletePromptTemplate()} disabled={!!working || !promptDrafts[promptMode]}><X size={16}/> Xóa mẫu</button><button className="button secondary" onClick={() => void previewPromptTemplate()} disabled={!!working || promptLoading}><Search size={16}/> Xem trước</button><button className="button primary" onClick={() => void savePromptTemplate()} disabled={!!working || promptDrafts[promptMode] === promptTemplates[promptMode]}><Check size={16}/> Lưu template</button></div></div>
@@ -609,7 +728,7 @@ export default function ThangMiaPage() {
               <div className="ai-grid">
               {([1,2,3] as const).map((ai) => {
                 const lane = overview.items.filter(x => x.ai === ai);
-                const visible = visibleItems.filter(x => x.ai === ai);
+                const visible = visibleItems.filter(x => x.ai === ai).sort((a, b) => laneSlot(a) - laneSlot(b));
                 const cursor = visible.length ? laneCursors[ai] % visible.length : 0;
                 const cardsToRender = laneViewAll[ai] ? visible : (visible[cursor] ? [visible[cursor]] : []);
                 const returned = workspaceStatus[ai]?.filter((entry) => entry.output_exists).length ?? 0;
@@ -618,14 +737,16 @@ export default function ThangMiaPage() {
                   <div className="lane-heading"><div className="lane-title-row"><div className={`ai-avatar avatar-${ai}`}><Sparkles size={19}/></div><div><h3>AI {ai}</h3><span>{returned} / {lane.length} đã trả về</span></div><div className="lane-count">{lane.length} THẺ</div></div>
                     <div className="lane-progress"><div style={{width: `${lane.length ? returned/lane.length*100 : 0}%`}}/></div>
                     <button type="button" className="button primary full" disabled={!ready || !!working} onClick={() => copyNext(ai)}><Clipboard size={16}/> Sao chép tiếp <ArrowRight size={17}/></button>
-                    <button type="button" className="button secondary full" disabled={!!working} onClick={() => void exportLane(ai)}><FileText size={16}/> Xuất 14 TXT</button>
+                    <button type="button" className="button secondary full" disabled={!!working} onClick={() => void exportLane(ai)}><FileText size={16}/> Xuất {lane.length * 2} prompt TXT</button>
                     <div className="lane-navigation">
-                      <button type="button" className="small-button" disabled={visible.length < 2} onClick={() => setLaneCursors((current) => ({ ...current, [ai]: (cursor + 1) % visible.length }))}><ChevronRight size={14}/> Bài tiếp theo</button>
+                      <button type="button" className="small-button" disabled={!visible.length} onClick={() => void archiveDoneAndMove(ai, visible[cursor], cursor, visible.length)}><ChevronRight size={14}/> Bài tiếp theo</button>
                       <button type="button" className="small-button" disabled={!visible.length} onClick={() => setLaneViewAll((current) => ({ ...current, [ai]: !current[ai] }))}>{laneViewAll[ai] ? 'Thu gọn' : `Xem toàn bộ (${visible.length})`}</button>
                     </div>
                   </div>
                   <div className={`lane-cards ${laneViewAll[ai] ? 'show-all' : 'single-card'}`}>{cardsToRender.length ? cardsToRender.map((item) => {
-                    const outputReturned = workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item))?.output_exists ?? false;
+                    const workspaceItem = workspaceStatus[ai]?.find((entry) => entry.slot === laneSlot(item));
+                    const outputReturned = workspaceItem?.output_exists ?? false;
+                    const imageReturned = workspaceItem?.image_exists ?? false;
                     return <article className={`story-card ${item.status === 'done' ? 'story-done' : ''} ${laneViewAll[ai] ? 'selectable-card' : ''}`} key={item.uid}
                     onClick={() => {
                       if (!laneViewAll[ai]) return;
@@ -646,13 +767,21 @@ export default function ThangMiaPage() {
                     <div className="story-title-row"><h4>{item.title}</h4><span className={`status-pill ${item.status}`}><span/>{STATUSES[item.status]}</span></div>
                     <p className="card-conflict">{item.conflict}</p>
                     <div className="story-card-actions" onClick={(event) => event.stopPropagation()}><button type="button" className="small-primary" disabled={!!working} onClick={() => void copyStory(item, 'full')}><Clipboard size={14}/> Sao chép</button>
+                      {outputReturned && <button type="button" className="small-primary copy-output" disabled={!!working} onClick={() => void copyReturnedStory(item)}><Clipboard size={14}/> Sao chép truyện trả về</button>}
                       <button className="small-button" onClick={() => openEditor(item)}><Pencil size={14}/> Sửa / P1 / P2</button>
                       {item.status === 'sent' || item.status === 'part1' ? <button type="button" className="small-button copy-undo" title="Hoàn tác sao chép" aria-label="Hoàn tác sao chép" disabled={!!working} onClick={() => void undoCopied(item)}><RotateCcw size={14}/> Hoàn tác sao chép</button> : null}
                       <button type="button" className={`small-square ${outputReturned ? 'returned' : item.status === 'done' ? 'undo' : ''}`} title={outputReturned ? 'Extension đã trả về' : item.status === 'done' ? 'Hoàn tác trạng thái nghiệp vụ' : 'Đánh dấu hoàn tất nghiệp vụ'} aria-label={outputReturned ? 'Extension đã trả về' : item.status === 'done' ? 'Hoàn tác trạng thái nghiệp vụ' : 'Đánh dấu hoàn tất nghiệp vụ'} onClick={() => void toggleDone(item)}><Check size={16}/></button></div>
                     <div className="dialog-copy-hint"><span>TXT:</span>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'prompt')}>Prompt</button>
+                      <button type="button" onClick={() => void openWorkspaceFile(item, 'image_prompt')}>Prompt ảnh</button>
                       <button type="button" onClick={() => void openWorkspaceFile(item, 'output')}>Truyện trả về</button>
                       {outputReturned && <small>Extension đã trả về · chưa đổi trạng thái nghiệp vụ</small>}
+                    </div>
+                    <div className="dialog-copy-hint image-result">
+                      <span>Ảnh: {imageReturned ? 'Đã có ảnh' : workspaceItem?.warnings?.length ? 'Lỗi đọc ảnh' : 'Chưa có ảnh'}</span>
+                      {imageReturned && <Image className="workflow-thumbnail" src={workspaceImageUrl(item)} alt={`Ảnh minh họa ${item.title}`} width={46} height={46} unoptimized />}
+                      {imageReturned && <button type="button" onClick={() => window.open(workspaceImageUrl(item), '_blank', 'noopener,noreferrer')}>Xem ảnh</button>}
+                      {imageReturned && <button type="button" onClick={() => void copyReturnedImage(item)}>Chép ảnh</button>}
                     </div>
                   </article>;
                   }) : <div className="lane-empty"><FileText size={28}/><strong>Không có thẻ phù hợp</strong><span>{lane.length ? 'Thử đổi bộ lọc hoặc từ khóa.' : 'Hãy bổ sung 14 ý tưởng cho AI này.'}</span></div>}</div>
@@ -702,6 +831,21 @@ export default function ThangMiaPage() {
           <div className="dialog-actions"><button className="button subtle" onClick={() => void scanEdited()} disabled={!!working}><Search size={16}/> Kiểm tra gần giống</button><div className="dialog-right-actions"><button className="button secondary" disabled={!!working} onClick={() => {setEditing(null);setForm(null);}}>Hủy</button><button className="button primary" disabled={!!working} onClick={() => void saveEdit()}><Check size={16}/> Lưu & đóng</button></div></div>
           <div className="dialog-copy-hint"><span>Lưu thay đổi & sao chép prompt:</span><button onClick={() => void saveAndCopy('full')} disabled={!!working}>Full</button><button onClick={() => void saveAndCopy('part1')} disabled={!!working}>Part 1</button><button onClick={() => void saveAndCopy('part2')} disabled={!!working}>Part 2</button></div>
         </section></div>}
+        {archiveViewer && <div className="modal-backdrop" onMouseDown={(e) => {if(e.target === e.currentTarget) setArchiveViewer(null);}}>
+          <section className="dialog archive-view-dialog" role="dialog" aria-modal="true" aria-label="Xem bài lưu trữ">
+            <div className="dialog-head"><div><div className="eyebrow muted">ARCHIVE · AI {archiveViewer.item.ai} · #{String(laneSlot(archiveViewer.item)).padStart(2, '0')}</div><h2>{archiveViewer.item.title}</h2><p>{prettyDate(archiveViewer.item.date)} · Bài đã hoàn tất</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setArchiveViewer(null)}><X size={21}/></button></div>
+            <div className="archive-view-fields">{FIELD_LABELS.map(({ key, label }) => <div key={key}><strong>{label}</strong><p>{archiveViewer.item[key]}</p></div>)}</div>
+            <div className="archive-assets">
+              <div className="archive-asset"><div className="archive-asset-heading"><FileText size={17}/><strong>Truyện trả về</strong></div>
+                {archiveViewer.output?.exists ? <pre>{archiveViewer.output.content}</pre> : <p className="muted">{archiveViewer.output?.warning || 'Chưa có truyện trả về trong workspace.'}</p>}
+              </div>
+              <div className="archive-asset"><div className="archive-asset-heading"><ImageIcon size={17}/><strong>Ảnh trả về</strong></div>
+                {archiveViewer.imageExists ? <Image className="archive-result-image" src={archiveViewer.imageUrl} alt={`Ảnh minh họa ${archiveViewer.item.title}`} width={640} height={420} unoptimized /> : <p className="muted">{archiveViewer.imageWarning}</p>}
+              </div>
+            </div>
+            <div className="dialog-actions"><button className="button primary" onClick={() => setArchiveViewer(null)}>Đóng</button></div>
+          </section>
+        </div>}
       {configOpen && workspaceConfig && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setConfigOpen(false);}}>
         <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label="Cấu hình workspace">
           <div className="dialog-head"><div><div className="eyebrow muted">WORKSPACE STORAGE</div><h2>Cấu hình thư mục TXT</h2><p>Backend xác nhận quyền đọc/ghi; trình duyệt không tự truy cập đường dẫn Windows.</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setConfigOpen(false)}><X size={21}/></button></div>
@@ -710,8 +854,8 @@ export default function ThangMiaPage() {
           <div className="dialog-actions"><button className="button secondary" onClick={() => void openWorkspaceConfig()} disabled={!!working}><RefreshCw size={16}/> Kiểm tra lại</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => setConfigOpen(false)}>Hủy</button><button className="button primary" onClick={() => void saveWorkspaceConfig()} disabled={!!working}><Check size={16}/> Xác nhận thư mục</button></div></div>
         </section></div>}
       {fileViewer && <div className="modal-backdrop" onMouseDown={(e) => {if (e.target === e.currentTarget) setFileViewer(null);}}>
-        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label={fileViewer.kind === 'prompt' ? 'Prompt TXT' : 'Truyện trả về'}>
-          <div className="dialog-head"><div><div className="eyebrow muted">{fileViewer.kind === 'prompt' ? 'PROMPT TXT' : 'GEMINI OUTPUT'}</div><h2>{fileViewer.kind === 'prompt' ? 'Prompt' : 'Truyện trả về'}</h2><p>{fileViewer.filename || 'Chưa có file'} · AI {fileViewer.item.ai} · slot {String(laneSlot(fileViewer.item)).padStart(2, '0')}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setFileViewer(null)}><X size={21}/></button></div>
+        <section className="dialog edit-dialog" role="dialog" aria-modal="true" aria-label={fileViewer.kind === 'output' ? 'Truyện trả về' : fileViewer.kind === 'image_prompt' ? 'Prompt ảnh' : 'Prompt TXT'}>
+          <div className="dialog-head"><div><div className="eyebrow muted">{fileViewer.kind === 'output' ? 'GEMINI OUTPUT' : 'PROMPT TXT'}</div><h2>{fileViewer.kind === 'output' ? 'Truyện trả về' : fileViewer.kind === 'image_prompt' ? 'Prompt ảnh' : 'Prompt'}</h2><p>{fileViewer.filename || 'Chưa có file'} · AI {fileViewer.item.ai} · slot {String(laneSlot(fileViewer.item)).padStart(2, '0')}</p></div><button className="icon-button" aria-label="Đóng" onClick={() => setFileViewer(null)}><X size={21}/></button></div>
           {!fileViewer.exists ? <div className="report-empty"><FileText size={35}/><strong>{fileViewer.kind === 'output' ? 'Chưa có kết quả' : 'Chưa có prompt TXT'}</strong><p>{fileViewer.warning || 'File chưa tồn tại trong workspace hiện tại.'}</p></div> :
             <textarea className="plan-textarea" value={fileViewer.content} onChange={(e) => setFileViewer({ ...fileViewer, content: e.target.value })} spellCheck={false} rows={18} />}
           <div className="dialog-actions"><button className="button secondary" onClick={downloadWorkspaceFile} disabled={!fileViewer.exists}><Download size={16}/> Tải file</button><button className="button secondary" onClick={() => void deleteWorkspaceFile()} disabled={!fileViewer.exists || !!working}><RotateCcw size={16}/> Xóa file</button><div className="dialog-right-actions"><button className="button secondary" onClick={() => setFileViewer(null)}>Đóng</button><button className="button primary" onClick={() => void saveWorkspaceFile()} disabled={!fileViewer.exists || !!working}><Check size={16}/> Lưu file TXT</button></div></div>

@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from . import core
 from .store import DEFAULT_DATABASE_PATH, Store
 from .workspace import (
-    check_workspace, delete_file, export_lane, lane_status, read_file, set_workspace, write_file,
+    check_workspace, delete_file, export_lane, export_lane_with_image_prompt, lane_status,
+    read_file, read_image, set_workspace, write_file,
 )
 
 DEFAULT_PATH = Path(os.environ.get('THANGMIA_DB_PATH', str(DEFAULT_DATABASE_PATH))).expanduser()
@@ -47,6 +48,29 @@ def metrics(items):
     counts = core.count_status(items)
     return {'total': len(items), 'done': counts['done'], 'in_progress': counts['sent'] + counts['part1'],
             'ready': counts['ready'], 'sent': counts['sent'], 'part1': counts['part1']}
+
+
+def purge_expired_archives(db):
+    cutoff = dt.datetime.now() - dt.timedelta(days=2)
+    removed = 0
+    for day in db['days'].values():
+        kept = []
+        for item in day['items']:
+            archived_at = item.get('archived_at')
+            if archived_at:
+                try:
+                    expired = dt.datetime.fromisoformat(archived_at) <= cutoff
+                except ValueError:
+                    expired = False
+                if expired:
+                    removed += 1
+                    continue
+            kept.append(item)
+        day['items'] = kept
+    if removed:
+        active_ids = {item.get('id') for day in db['days'].values() for item in day['items']}
+        db['library'] = [item for item in db['library'] if item.get('id') in active_ids]
+    return removed
 
 
 def remaining_ideas(db):
@@ -141,7 +165,7 @@ class WorkspaceFile(BaseModel):
     date: str
     ai: Literal[1, 2, 3]
     slot: int = Field(ge=1, le=14)
-    kind: Literal['prompt', 'output']
+    kind: Literal['prompt', 'image_prompt', 'output']
     content: str
     expected_hash: str | None = None
 
@@ -153,7 +177,7 @@ class PromptTemplateBody(BaseModel):
 class PromptPreview(BaseModel):
     date: str
     uid: str
-    mode: Literal['full', 'part1', 'part2']
+    mode: Literal['full', 'part1', 'part2', 'image']
     content: str | None = Field(default=None, max_length=200000)
 
 
@@ -168,20 +192,22 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get('/api/overview')
     def overview(date: str = Query(...)):
         valid_date(date)
-        db = database.read()
-        day = db['days'].get(date)
-        items = day['items'] if day else []
-        public_items = [{**item, 'full_prompt': None,
-                         'lane_slot': item['slot'] - ((item['ai'] - 1) * 14)}
-                        for item in items]
-        used_starters = len(core.used_starter_ids(db))
-        return {'date': date, 'exists': day is not None,
-                'items': public_items,
-                'stats': metrics(items),
-                'theme_names': core.THEME_NAME, 'library_size': len(db['library']),
-                'ideas_remaining': remaining_ideas(db),
-                'starter_used': used_starters, 'starter_total': 84,
-                'days_count': len(db['days'])}
+        with database.edit() as db:
+            purge_expired_archives(db)
+            day = db['days'].get(date)
+            items = [item for item in day['items'] if not item.get('archived_at')] if day else []
+            public_items = [{**item, 'full_prompt': None,
+                             'lane_slot': item['slot'] - ((item['ai'] - 1) * 14)}
+                            for item in items]
+            used_starters = len(core.used_starter_ids(db))
+            result = {'date': date, 'exists': day is not None,
+                      'items': public_items,
+                      'stats': metrics(items),
+                      'theme_names': core.THEME_NAME, 'library_size': len(db['library']),
+                      'ideas_remaining': remaining_ideas(db),
+                      'starter_used': used_starters, 'starter_total': 84,
+                      'days_count': len(db['days'])}
+        return result
 
     @app.post('/api/days', status_code=201)
     def create_day(body: CreateDay):
@@ -199,7 +225,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         db = database.read()
         result = []
         for date, day in sorted(db['days'].items(), reverse=True):
-            items = day['items']
+            items = [item for item in day['items'] if not item.get('archived_at')]
             result.append({'date': date, 'count': len(items),
                            'assigned': sum(x.get('status') in ('sent', 'part1', 'done') for x in items),
                            'done': sum(x.get('status') == 'done' for x in items)})
@@ -214,10 +240,26 @@ def create_app(store: Store | None = None) -> FastAPI:
         if day is None:
             raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
         try:
-            return export_lane(date, body.ai, (item for item in day['items'] if item.get('ai') == body.ai),
+            return export_lane(date, body.ai, (item for item in day['items']
+                                               if item.get('ai') == body.ai and not item.get('archived_at')),
                                db.get('prompt_templates', {}))
         except (OSError, ValueError) as exc:
             raise HTTPException(409, f'Không thể xuất file TXT: {exc}') from exc
+
+    @app.post('/api/workspace/export-with-image')
+    def export_workspace_with_image(body: WorkspaceExport):
+        date = valid_date(body.date)
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            return export_lane_with_image_prompt(date, body.ai,
+                (item for item in day['items']
+                 if item.get('ai') == body.ai and not item.get('archived_at')),
+                db.get('prompt_templates', {}))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, f'Không thể xuất prompt: {exc}') from exc
 
     @app.get('/api/workspace/config')
     def get_workspace_config():
@@ -250,12 +292,12 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get('/api/prompt-templates')
     def get_prompt_templates():
         db = database.read()
-        return {'templates': db.get('prompt_templates', {'full': '', 'part1': '', 'part2': ''}),
+        return {'templates': db.get('prompt_templates', {'full': '', 'part1': '', 'part2': '', 'image': ''}),
                 'variables': list(core.PROMPT_VARIABLES),
                 'modes': list(core.PROMPT_MODES)}
 
     @app.put('/api/prompt-templates/{mode}')
-    def save_prompt_template(mode: Literal['full', 'part1', 'part2'], body: PromptTemplateBody):
+    def save_prompt_template(mode: Literal['full', 'part1', 'part2', 'image'], body: PromptTemplateBody):
         try:
             content = core.validate_prompt_template(body.content)
         except ValueError as exc:
@@ -265,7 +307,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {'mode': mode, 'content': content}
 
     @app.delete('/api/prompt-templates/{mode}')
-    def delete_prompt_template(mode: Literal['full', 'part1', 'part2']):
+    def delete_prompt_template(mode: Literal['full', 'part1', 'part2', 'image']):
         with database.edit() as db:
             db.setdefault('prompt_templates', {})[mode] = ''
         return {'mode': mode, 'content': ''}
@@ -287,10 +329,29 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         return {'text': text, 'mode': body.mode, 'uid': body.uid}
 
+    @app.get('/api/workspace/image')
+    def workspace_image(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
+                        slot: int = Query(..., ge=1, le=14)):
+        valid_date(date)
+        if ai not in (1, 2, 3):
+            raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
+        db = database.read()
+        day = db['days'].get(date)
+        if day is None:
+            raise HTTPException(404, 'Ngày làm việc chưa được tạo.')
+        try:
+            content, media_type, filename = read_image(date, ai, slot, day['items'])
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return Response(content, media_type=media_type,
+                        headers={'Content-Disposition': f'inline; filename="{filename}"'})
+
     @app.get('/api/workspace/file')
     def workspace_file(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
                        slot: int = Query(..., ge=1, le=14),
-                       kind: Literal['prompt', 'output'] = Query(...)):
+                       kind: Literal['prompt', 'image_prompt', 'output'] = Query(...)):
         valid_date(date)
         if ai not in (1, 2, 3):
             raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
@@ -322,7 +383,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.delete('/api/workspace/file')
     def remove_workspace_file(date: str = Query(...), ai: int = Query(..., ge=1, le=3),
                               slot: int = Query(..., ge=1, le=14),
-                              kind: Literal['prompt', 'output'] = Query(...)):
+                              kind: Literal['prompt', 'image_prompt', 'output'] = Query(...)):
         valid_date(date)
         if ai not in (1, 2, 3):
             raise HTTPException(422, 'AI lane phải là 1, 2 hoặc 3.')
@@ -360,6 +421,24 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {'message': 'Đã ghi nhận sao chép prompt thành công.', 'status': item['status'],
                 'ideas_remaining': remaining}
 
+    @app.post('/api/days/{date}/items/{uid}/output-copied')
+    def output_copied(date: str, uid: str):
+        valid_date(date)
+        with database.edit() as db:
+            item = get_item(db, date, uid)
+            local_slot = item['slot'] - ((item['ai'] - 1) * 14)
+            try:
+                output = read_file(date, item['ai'], local_slot, 'output', get_day(db, date)['items'])
+            except (OSError, ValueError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+            if not output['exists']:
+                raise HTTPException(409, 'Chưa có truyện trả về để sao chép.')
+            item['status'] = 'done'
+            item['last_copied'] = dt.datetime.now().isoformat(timespec='seconds')
+            remaining = remaining_ideas(db)
+        return {'message': 'Đã sao chép truyện trả về và ghi nhận hoàn tất.',
+                'status': item['status'], 'ideas_remaining': remaining}
+
     @app.post('/api/days/{date}/items/{uid}/undo-copied')
     def undo_copied(date: str, uid: str):
         valid_date(date)
@@ -383,6 +462,39 @@ def create_app(store: Store | None = None) -> FastAPI:
             item = get_item(db, date, uid)
             item['status'] = 'sent' if item['status'] == 'done' else 'done'
         return {'message': 'Đã cập nhật trạng thái.', 'status': item['status']}
+
+    @app.post('/api/days/{date}/items/{uid}/archive')
+    def archive_item(date: str, uid: str):
+        valid_date(date)
+        with database.edit() as db:
+            purge_expired_archives(db)
+            item = get_item(db, date, uid)
+            if item.get('status') != 'done':
+                raise HTTPException(409, 'Chỉ có thể lưu trữ bài đã hoàn tất.')
+            item['archived_at'] = dt.datetime.now().isoformat(timespec='seconds')
+        return {'message': 'Đã chuyển bài vào Kho lưu trữ.', 'archived_at': item['archived_at']}
+
+    @app.get('/api/archive')
+    def archive():
+        with database.edit() as db:
+            purge_expired_archives(db)
+            items = []
+            for date, day in db['days'].items():
+                items.extend({**item, 'date': date} for item in day['items'] if item.get('archived_at'))
+        return {'items': items}
+
+    @app.delete('/api/days/{date}/items/{uid}')
+    def delete_day_item(date: str, uid: str):
+        valid_date(date)
+        with database.edit() as db:
+            day = get_day(db, date)
+            item = get_item(db, date, uid)
+            if item['status'] != 'ready':
+                raise HTTPException(409, 'Chỉ có thể xóa bài chưa giao.')
+            day['items'] = [candidate for candidate in day['items'] if candidate.get('uid') != uid]
+            db['library'] = [brief for brief in db['library'] if brief.get('id') != item.get('id')]
+            remaining = remaining_ideas(db)
+        return {'message': 'Đã xóa bài khỏi Kho ý tưởng.', 'ideas_remaining': remaining}
 
     @app.patch('/api/days/{date}/items/{uid}/brief')
     def edit_brief(date: str, uid: str, body: BriefEdit):

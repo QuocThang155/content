@@ -69,6 +69,35 @@ def _file_names(date: str, ai: int, slot: int) -> tuple[str, str]:
     return f'{prefix}.txt', f'{prefix}_output.txt'
 
 
+def _image_prompt_name(date: str, ai: int, slot: int) -> str:
+    return f'{date}_AI{ai}_{slot:02d}_image_prompt.txt'
+
+
+def _image_candidates(date: str, ai: int, slot: int) -> list[Path]:
+    _, lane = _lane_path(ai)
+    prefix = f'{date}_AI{ai}_{slot:02d}_image'
+    candidates = [lane / f'{prefix}{suffix}' for suffix in ('.png', '.jpg', '.jpeg', '.webp')]
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise ValueError(f'Tập tin ảnh symbolic link không được phép: {candidate.name}')
+        if candidate.exists() and candidate.resolve().parent != lane.resolve():
+            raise ValueError('Đường dẫn ảnh nằm ngoài workspace.')
+    return candidates
+
+
+def _detect_image(path: Path) -> str:
+    header = path.read_bytes()[:16]
+    if header.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if header.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if header[:4] == b'RIFF' and header[8:12] == b'WEBP':
+        return 'image/webp'
+    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+        raise ValueError(f'File ảnh không hợp lệ hoặc không được hỗ trợ: {path.name}.')
+    raise ValueError(f'File ảnh không hợp lệ hoặc không được hỗ trợ: {path.name}.')
+
+
 def _local_slot(ai: int, global_slot: int) -> int:
     if ai not in (1, 2, 3) or not (1 <= global_slot <= 42):
         raise ValueError('Lane hoặc slot không hợp lệ.')
@@ -157,10 +186,11 @@ def _write_text_safely(path: Path, content: str) -> None:
 
 def export_lane(date: str, ai: int, items: Iterable[dict], templates: dict[str, str]) -> dict[str, object]:
     lane = sorted(items, key=lambda item: item.get('slot', 0))
-    expected_slots = set(range(1, 15))
     local_slots = {_local_slot(ai, item.get('slot', 0)) for item in lane}
-    if len(lane) != 14 or local_slots != expected_slots:
-        raise ValueError(f'AI {ai} phải có đúng 14 brief với slot duy nhất từ 01 đến 14.')
+    if not lane:
+        raise ValueError(f'AI {ai} không còn brief để xuất.')
+    if len(local_slots) != len(lane):
+        raise ValueError(f'AI {ai} có slot bị trùng.')
     core.validate_prompt_template(templates.get('full', ''))
     if not templates.get('full', '').strip():
         raise ValueError('Chưa cấu hình template full. Hãy mở Cài đặt Prompt để nhập và lưu template.')
@@ -191,6 +221,51 @@ def export_lane(date: str, ai: int, items: Iterable[dict], templates: dict[str, 
     return {'written': written, 'skipped': skipped, 'folder': str(lane_dir)}
 
 
+def export_lane_with_image_prompt(date: str, ai: int, items: Iterable[dict], templates: dict[str, str]) -> dict[str, object]:
+    lane = sorted(items, key=lambda item: item.get('slot', 0))
+    local_slots = {_local_slot(ai, item.get('slot', 0)) for item in lane}
+    if not lane:
+        raise ValueError(f'AI {ai} không còn brief để xuất.')
+    if len(local_slots) != len(lane):
+        raise ValueError(f'AI {ai} có slot bị trùng.')
+    for mode in ('full', 'image'):
+        core.validate_prompt_template(templates.get(mode, ''))
+        if not templates.get(mode, '').strip():
+            raise ValueError(f'Chưa cấu hình template {mode}. Hãy mở Cài đặt Prompt để nhập và lưu template.')
+    root = _absolute_root()
+    lane_dir = _safe_lane_dir(root, ai)
+    manifest = _read_manifest(root)
+    written = 0
+    skipped = 0
+    for item in lane:
+        local_slot = _local_slot(ai, item['slot'])
+        input_name, output_name = _file_names(date, ai, local_slot)
+        image_prompt_name = _image_prompt_name(date, ai, local_slot)
+        input_path, output_path = lane_dir / input_name, lane_dir / output_name
+        image_prompt_path = lane_dir / image_prompt_name
+        if output_path.exists() or any(candidate.exists() for candidate in _image_candidates(date, ai, local_slot)):
+            skipped += 1
+            continue
+        prompt = input_path.read_text(encoding='utf-8') if input_path.is_file() else core.render_prompt(item, 'full', templates)
+        image_prompt = image_prompt_path.read_text(encoding='utf-8') if image_prompt_path.is_file() else core.render_prompt(item, 'image', templates)
+        if not input_path.exists():
+            _write_text_safely(input_path, prompt)
+            written += 1
+        if not image_prompt_path.exists():
+            _write_text_safely(image_prompt_path, image_prompt)
+            written += 1
+        manifest[_record_key(date, ai, local_slot)] = {
+            'date': date, 'ai': ai, 'slot': local_slot, 'uid': item['uid'],
+            'prompt_filename': input_name, 'image_prompt_filename': image_prompt_name,
+            'output_filename': output_name, 'image_filename': None,
+            'prompt_hash': _hash_text(prompt), 'image_prompt_hash': _hash_text(image_prompt),
+            'prompt_version': 1, 'output_hash': None, 'image_hash': None,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+    _write_json_safely(_manifest_path(root), manifest)
+    return {'written': written, 'skipped': skipped, 'folder': str(lane_dir), 'prompt_files': written}
+
+
 def lane_status(date: str, ai: int, items: Iterable[dict]) -> list[dict[str, object]]:
     root, lane = _lane_path(ai)
     manifest = _read_manifest(root) if root.exists() else {}
@@ -198,28 +273,60 @@ def lane_status(date: str, ai: int, items: Iterable[dict]) -> list[dict[str, obj
     for slot in range(1, 15):
         item = _validate_slot(items, ai, slot)
         input_name, output_name = _file_names(date, ai, slot)
+        image_prompt_name = _image_prompt_name(date, ai, slot)
         input_path, output_path = lane / input_name, lane / output_name
+        image_prompt_path = lane / image_prompt_name
+        image_paths = [candidate for candidate in _image_candidates(date, ai, slot) if candidate.is_file()]
         record = manifest.get(_record_key(date, ai, slot))
         warnings = []
-        if record is None and (input_path.exists() or output_path.exists()):
+        if record is None and (input_path.exists() or output_path.exists() or image_prompt_path.exists() or image_paths):
             warnings.append('Thiếu metadata ánh xạ cho file workspace.')
         elif record and record.get('uid') != item['uid']:
             warnings.append('UID trong metadata không còn khớp brief hiện tại.')
+        image_media_type = None
+        image_warning = None
+        if image_paths:
+            try:
+                image_media_type = _detect_image(image_paths[0])
+            except ValueError as exc:
+                image_warning = str(exc)
+                warnings.append(image_warning)
         result.append({'slot': slot, 'uid': item['uid'], 'prompt_filename': input_name,
-                       'output_filename': output_name, 'prompt_exists': input_path.is_file(),
-                       'output_exists': output_path.is_file(), 'prompt_hash': record.get('prompt_hash') if record else None,
+                       'image_prompt_filename': image_prompt_name, 'output_filename': output_name,
+                       'image_filename': image_paths[0].name if image_paths else None,
+                       'prompt_exists': input_path.is_file(), 'image_prompt_exists': image_prompt_path.is_file(),
+                       'output_exists': output_path.is_file(), 'image_exists': bool(image_paths and image_media_type),
+                       'image_media_type': image_media_type, 'prompt_hash': record.get('prompt_hash') if record else None,
+                       'image_prompt_hash': record.get('image_prompt_hash') if record else None,
                        'output_hash': _hash_text(output_path.read_text(encoding='utf-8')) if output_path.is_file() else None,
+                       'image_hash': hashlib.sha256(image_paths[0].read_bytes()).hexdigest() if image_paths and image_media_type else None,
                        'warnings': warnings})
     return result
 
 
-def read_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'], items: Iterable[dict]) -> dict[str, object]:
+def read_image(date: str, ai: int, slot: int, items: Iterable[dict]) -> tuple[bytes, str, str]:
+    root, lane = _lane_path(ai)
+    item = _validate_slot(items, ai, slot)
+    record = _read_manifest(root).get(_record_key(date, ai, slot))
+    if not record or record.get('uid') != item['uid']:
+        raise ValueError('Không có metadata hợp lệ để ánh xạ file ảnh với brief.')
+    paths = [candidate for candidate in _image_candidates(date, ai, slot) if candidate.is_file()]
+    if not paths:
+        raise FileNotFoundError('Chưa có ảnh trả về.')
+    path = paths[0]
+    media_type = _detect_image(path)
+    return path.read_bytes(), media_type, path.name
+
+
+def read_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'image_prompt', 'output'], items: Iterable[dict]) -> dict[str, object]:
     root, lane = _lane_path(ai)
     item = _validate_slot(items, ai, slot)
     records = _read_manifest(root)
     record = records.get(_record_key(date, ai, slot))
     input_name, output_name = _file_names(date, ai, slot)
     filename = input_name if kind == 'prompt' else output_name
+    if kind == 'image_prompt':
+        filename = _image_prompt_name(date, ai, slot)
     path = lane / filename
     if not record:
         if not path.exists():
@@ -234,7 +341,7 @@ def read_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'], 
     return {'content': content, 'filename': filename, 'hash': _hash_text(content), 'uid': item['uid'], 'exists': True}
 
 
-def write_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'], content: str,
+def write_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'image_prompt', 'output'], content: str,
                expected_hash: str | None, items: Iterable[dict]) -> dict[str, object]:
     root, lane = _lane_path(ai)
     item = _validate_slot(items, ai, slot)
@@ -243,22 +350,28 @@ def write_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'],
     if not record or record.get('uid') != item['uid']:
         raise ValueError('Không có metadata hợp lệ để ánh xạ file với brief.')
     input_name, output_name = _file_names(date, ai, slot)
-    path = lane / (input_name if kind == 'prompt' else output_name)
+    filename = input_name if kind == 'prompt' else output_name
+    if kind == 'image_prompt':
+        filename = _image_prompt_name(date, ai, slot)
+    path = lane / filename
     current_hash = _hash_text(path.read_text(encoding='utf-8')) if path.is_file() else None
     if expected_hash is not None and current_hash != expected_hash:
         raise FileExistsError('File đã thay đổi; tải lại trước khi lưu.')
     if not path.is_file():
         raise FileNotFoundError(f'Chưa có file {path.name}.')
     _write_text_safely(path, content)
-    record['prompt_hash' if kind == 'prompt' else 'output_hash'] = _hash_text(content)
+    hash_key = 'prompt_hash' if kind == 'prompt' else 'output_hash'
+    if kind == 'image_prompt':
+        hash_key = 'image_prompt_hash'
+    record[hash_key] = _hash_text(content)
     if kind == 'prompt':
         record['prompt_version'] = int(record.get('prompt_version', 1)) + 1
     record['updated_at'] = datetime.now(timezone.utc).isoformat()
     _write_json_safely(_manifest_path(root), records)
-    return {'filename': path.name, 'hash': record['prompt_hash' if kind == 'prompt' else 'output_hash']}
+    return {'filename': path.name, 'hash': record[hash_key]}
 
 
-def delete_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output'], items: Iterable[dict]) -> dict[str, str]:
+def delete_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'image_prompt', 'output'], items: Iterable[dict]) -> dict[str, str]:
     root, lane = _lane_path(ai)
     item = _validate_slot(items, ai, slot)
     records = _read_manifest(root)
@@ -266,13 +379,18 @@ def delete_file(date: str, ai: int, slot: int, kind: Literal['prompt', 'output']
     if not record or record.get('uid') != item['uid']:
         raise ValueError('Không có metadata hợp lệ để ánh xạ file với brief.')
     input_name, output_name = _file_names(date, ai, slot)
-    path = lane / (input_name if kind == 'prompt' else output_name)
+    filename = input_name if kind == 'prompt' else output_name
+    if kind == 'image_prompt':
+        filename = _image_prompt_name(date, ai, slot)
+    path = lane / filename
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ValueError('Đường dẫn file không hợp lệ.')
     if path.exists():
         path.unlink()
     if kind == 'prompt':
         record['prompt_hash'] = None
+    elif kind == 'image_prompt':
+        record['image_prompt_hash'] = None
     else:
         record['output_hash'] = None
     _write_json_safely(_manifest_path(root), records)

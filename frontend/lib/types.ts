@@ -1,13 +1,13 @@
 export type Status = 'ready' | 'sent' | 'part1' | 'done';
 export type Mode = 'full' | 'part1' | 'part2';
-export type Tab = 'dashboard' | 'vault' | 'workflow' | 'planner' | 'history' | 'prompt-settings';
+export type Tab = 'dashboard' | 'vault' | 'archive' | 'workflow' | 'planner' | 'history' | 'prompt-settings';
 export type BriefFields = {
   title: string; hero: string; antagonist: string; conflict: string;
   evidence: string; reversal: string; ending: string;
 };
 export type Story = BriefFields & {
   id: string; uid: string; slot: number; lane_slot?: number; ai: 1 | 2 | 3;
-  source: string; theme: string; status: Status; last_copied?: string; full_prompt?: string;
+  source: string; theme: string; status: Status; archived_at?: string; last_copied?: string; full_prompt?: string;
   notes?: string; favorite?: boolean; draft?: boolean;
 };
 export type Stats = { total: number; done: number; in_progress: number; ready: number; sent: number; part1: number };
@@ -25,9 +25,11 @@ export type WorkspaceLane = { path: string; exists: boolean; readable: boolean; 
 export type WorkspaceConfig = { folder: string; exists: boolean; readable: boolean; writable: boolean; lanes: Record<string, WorkspaceLane> };
 export type WorkspaceItem = {
   slot: number; uid: string; prompt_filename: string; output_filename: string;
-  prompt_exists: boolean; output_exists: boolean; prompt_hash: string | null;
-  output_hash: string | null; warnings: string[];
+  image_prompt_filename: string; image_filename: string | null;
+  prompt_exists: boolean; image_prompt_exists: boolean; output_exists: boolean; image_exists: boolean;
+  image_media_type: string | null; prompt_hash: string | null; image_prompt_hash: string | null;
+  output_hash: string | null; image_hash: string | null; warnings: string[];
 };
 export type WorkspaceFile = { content: string; filename: string; hash: string | null; uid: string; exists: boolean; warning?: string };
-export type PromptMode = 'full' | 'part1' | 'part2';
+export type PromptMode = 'full' | 'part1' | 'part2' | 'image';
 export type PromptTemplates = Record<PromptMode, string>;
