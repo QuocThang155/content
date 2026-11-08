@@ -287,9 +287,9 @@ Web không tự gọi Gemini, không tạo ảnh và không chuyển trạng th�
 vì phát hiện output hoặc ảnh.
 
 Trong mỗi thẻ Workflow, Web hiển thị **Chưa có ảnh**, **Đã có ảnh** hoặc **Lỗi
-đọc ảnh**, kèm thumbnail khi ảnh hợp lệ. Nút **Xem ảnh** mở ảnh thật; **Chép
-ảnh** dùng dữ liệu ảnh qua Clipboard API, không chép đường dẫn. Backend xác minh
-manifest/UID, chữ ký MIME và phạm vi workspace trước khi đọc ảnh.
+đọc ảnh**, kèm thumbnail khi ảnh hợp lệ. Nút **Xem ảnh** mở ảnh thật; **Lưu ảnh**
+tải ảnh về máy; **Chép ảnh** chuyển ảnh về PNG trước khi dùng Clipboard API, không
+chép đường dẫn. Backend xác minh
 
 Khi một bài đã `done` và người dùng bấm **Bài tiếp theo**, bài đó được chuyển
 vào **Kho lưu trữ** và ẩn khỏi Workflow, Kho ý tưởng và các danh sách đang làm

@@ -441,10 +441,50 @@ export default function ThangMiaPage() {
       if (!response.ok) throw new Error('Chưa có ảnh trả về hoặc ảnh không hợp lệ.');
       const blob = await response.blob();
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-        throw new Error('Trình duyệt không hỗ trợ sao chép ảnh trực tiếp.');
+        throw new Error('Trình duyệt không hỗ trợ sao chép ảnh trực tiếp. Hãy dùng Chrome hoặc Edge trên localhost/HTTPS.');
       }
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+      const sourceUrl = URL.createObjectURL(blob);
+      try {
+        const image = new window.Image();
+        image.decoding = 'async';
+        image.src = sourceUrl;
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error('Không thể giải mã ảnh trả về trong trình duyệt.'));
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        if (!canvas.width || !canvas.height) throw new Error('Ảnh trả về không có kích thước hợp lệ.');
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Trình duyệt không tạo được vùng xử lý ảnh.');
+        context.drawImage(image, 0, 0);
+        const pngBlob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Không thể chuyển ảnh sang PNG.')), 'image/png');
+        });
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+      } finally {
+        URL.revokeObjectURL(sourceUrl);
+      }
       toast(`Đã chép ảnh minh họa · ${item.title}`);
+    });
+  }
+  async function saveReturnedImage(item: Story, itemDate = date) {
+    await execute(`save-image-${item.uid}`, async () => {
+      const path = `/workspace/image?date=${encodeURIComponent(itemDate)}&ai=${item.ai}&slot=${laneSlot(item)}`;
+      const response = await fetch('/api' + path, { cache: 'no-store' });
+      if (!response.ok) throw new Error('Chưa có ảnh trả về hoặc ảnh không hợp lệ.');
+      const blob = await response.blob();
+      const extension = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${itemDate}_AI${item.ai}_${String(laneSlot(item)).padStart(2, '0')}_image.${extension}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast(`Đã lưu ảnh minh họa · ${item.title}`);
     });
   }
   async function exportLane(ai: 1 | 2 | 3) {
@@ -781,6 +821,7 @@ export default function ThangMiaPage() {
                       <span>Ảnh: {imageReturned ? 'Đã có ảnh' : workspaceItem?.warnings?.length ? 'Lỗi đọc ảnh' : 'Chưa có ảnh'}</span>
                       {imageReturned && <Image className="workflow-thumbnail" src={workspaceImageUrl(item)} alt={`Ảnh minh họa ${item.title}`} width={46} height={46} unoptimized />}
                       {imageReturned && <button type="button" onClick={() => window.open(workspaceImageUrl(item), '_blank', 'noopener,noreferrer')}>Xem ảnh</button>}
+                      {imageReturned && <button type="button" onClick={() => void saveReturnedImage(item)}>Lưu ảnh</button>}
                       {imageReturned && <button type="button" onClick={() => void copyReturnedImage(item)}>Chép ảnh</button>}
                     </div>
                   </article>;
@@ -841,6 +882,7 @@ export default function ThangMiaPage() {
               </div>
               <div className="archive-asset"><div className="archive-asset-heading"><ImageIcon size={17}/><strong>Ảnh trả về</strong></div>
                 {archiveViewer.imageExists ? <Image className="archive-result-image" src={archiveViewer.imageUrl} alt={`Ảnh minh họa ${archiveViewer.item.title}`} width={640} height={420} unoptimized /> : <p className="muted">{archiveViewer.imageWarning}</p>}
+                {archiveViewer.imageExists && <button type="button" className="small-button" onClick={() => void saveReturnedImage(archiveViewer.item, archiveViewer.item.date)}><Download size={14}/> Lưu ảnh</button>}
               </div>
             </div>
             <div className="dialog-actions"><button className="button primary" onClick={() => setArchiveViewer(null)}>Đóng</button></div>
