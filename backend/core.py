@@ -246,7 +246,6 @@ def unique_candidates(item, candidates, limit=5):
 
 def default_db():
     return {'version': 2, 'library': seed_bank(), 'days': {}, 'history': [], 'retired_idea_ids': [],
-            'replenish_workflow': False,
             'prompt_templates': {'full': '', 'part1': '', 'part2': '', 'image': ''}}
 
 
@@ -260,9 +259,6 @@ def normalized_db(raw):
     retired_ids = raw.setdefault('retired_idea_ids', [])
     if not isinstance(retired_ids, list) or any(not isinstance(idea_id, str) for idea_id in retired_ids):
         raise ValueError('Danh sách ý tưởng đã xóa không hợp lệ.')
-    replenish_workflow = raw.setdefault('replenish_workflow', False)
-    if not isinstance(replenish_workflow, bool):
-        raise ValueError('Trạng thái bổ sung Workflow không hợp lệ.')
     if any(not isinstance(v, dict) or not isinstance(v.get('items'), list) for v in raw['days'].values()):
         raise ValueError('Cấu trúc ngày làm việc không hợp lệ.')
     raw.setdefault('history', [])

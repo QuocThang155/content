@@ -324,9 +324,9 @@ export default function ThangMiaPage() {
 
   async function clearCurrentIdeas() {
     if (!window.confirm(
-      'Xóa toàn bộ ý tưởng hiện tại và mọi bài đang hoạt động trong Kho ý tưởng/Workflow trên tất cả ngày? ' +
+      'Xóa toàn bộ ý tưởng hiện tại và mọi bài đang hoạt động trong Workflow trên tất cả ngày? ' +
       'Ngày lịch sử sẽ được giữ lại ở trạng thái rỗng; Kho lưu trữ, prompt và file trong Workspace được giữ nguyên. ' +
-      'Khi nạp đủ 42 ý tưởng mới, hệ thống sẽ tự chia vào một ngày Workflow mới.',
+      'Sau đó, nhập 14 ý tưởng cho từng AI bằng nút Nhập ý tưởng; mỗi lần nhập sẽ cập nhật cả thư viện và Workflow.',
     )) return;
     await execute('clear-current-ideas', async () => {
       const result = await api<{ deleted_count: number; workflow_cleared_count: number }>('/library', { method: 'DELETE' });
@@ -339,50 +339,9 @@ export default function ThangMiaPage() {
         ideas_remaining: 0,
       }));
       setWorkspaceStatus({});
-      setUnavailable('Kho ý tưởng đã được xóa. Nạp đủ 42 ý tưởng mới để tạo Workflow.');
+      setUnavailable('Kho ý tưởng đã được xóa. Dùng Nhập ý tưởng để thêm 14 brief cùng lúc vào thư viện và Workflow.');
       await syncPages(date, false);
       toast(`Đã xóa ${result.deleted_count} ý tưởng và ${result.workflow_cleared_count} bài Workflow đang hoạt động. Kho lưu trữ được giữ nguyên.`);
-    });
-  }
-
-  async function replenishIdeaLibrary() {
-    await execute('replenish-idea-library', async () => {
-      let allowSimilar = false;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const result = await api<{
-            message: string;
-            workflow_date: string | null;
-            archive_duplicates: ArchiveDuplicate[];
-          }>('/library/import', {
-            method: 'POST',
-            body: JSON.stringify({ ai: plannerAi, text: plannerText, allow_similar: allowSimilar }),
-          });
-          setPlannerText('');
-          await refreshIdeaLibrary();
-          if (result.workflow_date) {
-            setDate(result.workflow_date);
-            await refresh(result.workflow_date, false);
-            await refreshHistory();
-          }
-          const warning = archiveWarningText(result.archive_duplicates);
-          toast(result.workflow_date
-            ? `${result.message} Đã tự chia 42 ý tưởng vào Workflow ngày ${prettyDate(result.workflow_date)}.${warning ? ` ${warning}` : ''}`
-            : result.message, warning ? 'info' : 'success');
-          return;
-        } catch (err) {
-          const detail = err instanceof ApiError ? err.detail as PlanConflict : undefined;
-          if (err instanceof ApiError && err.status === 409 && detail?.code === 'similar_ideas' && !allowSimilar) {
-            const warnings = (detail.alerts || []).map((item) =>
-              `${item.line}. ${item.title} ↔ ${item.other_title} (${Math.round(item.score * 100)}%)`,
-            ).join('\n');
-            if (!window.confirm(`Cảnh báo trùng từ khóa:\n${warnings}\n\nVẫn nạp 14 ý tưởng vào kho?`)) return;
-            allowSimilar = true;
-            continue;
-          }
-          throw err;
-        }
-      }
     });
   }
 
@@ -688,7 +647,7 @@ export default function ThangMiaPage() {
           const result = await api<{ message: string }>(`/days/${date}/plan`, { method: 'POST',
             body: JSON.stringify({ ai: plannerAi, text: plannerText, replace_ready: replaceReady, allow_similar: allowSimilar }) });
           setPlannerText('');
-          await refresh(date, false);
+          await Promise.all([refresh(date, false), refreshIdeaLibrary(), refreshHistory()]);
           toast(result.message);
           return;
         } catch (err) {
@@ -730,15 +689,56 @@ export default function ThangMiaPage() {
     if (filter === 'done') return item.status === 'done';
     return true;
   }), [overview.items, search, filter]);
+  const currentIdeaLibrary = useMemo(() => {
+    const itemsById = new Map((ideaLibrary?.items ?? []).map((idea) => [idea.id, idea]));
+    for (const item of overview.items) {
+      const existing = itemsById.get(item.id);
+      itemsById.set(item.id, {
+        ...existing,
+        id: item.id,
+        title: item.title,
+        hero: item.hero,
+        antagonist: item.antagonist,
+        conflict: item.conflict,
+        evidence: item.evidence,
+        reversal: item.reversal,
+        ending: item.ending,
+        theme: item.theme,
+        source: item.source,
+        in_workflow: true,
+        workflow_date: date,
+        workflow_ai: item.ai,
+        workflow_slot: laneSlot(item),
+        workflow_status: item.status,
+      });
+    }
+    const items = [...itemsById.values()];
+    const themeCounts = Object.fromEntries(
+      Object.keys(ideaLibrary?.theme_names ?? overview.theme_names).map((theme) => [
+        theme,
+        Math.max(ideaLibrary?.theme_counts[theme] ?? 0, items.filter((idea) => idea.theme === theme).length),
+      ]),
+    );
+    const availableCount = items.filter((idea) => !idea.in_workflow).length;
+    const workflowCount = items.filter((idea) => idea.in_workflow).length;
+    return {
+      items,
+      available_count: Math.max(ideaLibrary?.available_count ?? 0, availableCount),
+      workflow_count: Math.max(ideaLibrary?.workflow_count ?? 0, workflowCount),
+      total_count: Math.max(ideaLibrary?.total_count ?? 0, items.length),
+      theme_names: ideaLibrary?.theme_names ?? overview.theme_names,
+      theme_counts: themeCounts,
+    };
+  }, [date, ideaLibrary, overview.items, overview.theme_names]);
   const visibleLibraryIdeas = useMemo(() => {
     const query = ideaSearch.trim().toLocaleLowerCase();
-    return (ideaLibrary?.items ?? []).filter((idea) => {
+    return currentIdeaLibrary.items.filter((idea) => {
       if (ideaTheme !== 'all' && idea.theme !== ideaTheme) return false;
       if (!query) return true;
       return `${idea.title} ${idea.hero} ${idea.antagonist} ${idea.conflict} ${idea.evidence} ${idea.reversal} ${idea.ending}`
         .toLocaleLowerCase().includes(query);
     });
-  }, [ideaLibrary, ideaSearch, ideaTheme]);
+  }, [currentIdeaLibrary.items, ideaSearch, ideaTheme]);
   const plannedLines = plannerText.split('\n').filter((line) => line.includes('||')).length;
   const progressPercent = overview.stats.total ? Math.round(overview.stats.done * 100 / overview.stats.total) : 0;
 
@@ -808,14 +808,14 @@ export default function ThangMiaPage() {
               <div className="section-heading">
                 <div>
                   <div className="eyebrow muted">CURRENT IDEA POOL</div>
-                  <h2>Ý tưởng hiện tại <span className="num-badge">{ideaLibrary?.available_count ?? 0} ý tưởng còn dùng được</span></h2>
-                  <p>Danh sách ý tưởng chưa được phân vào Workflow. Ý tưởng đã dùng được ẩn khỏi trang này để tránh trùng lặp.
-                    {ideaLibrary && ideaLibrary.available_count === 0 && ' Kho trống; hãy nạp ý tưởng mới trước khi tạo ngày làm việc.'}</p>
+                  <h2>Ý tưởng hiện tại <span className="num-badge">{currentIdeaLibrary.total_count} ý tưởng · {currentIdeaLibrary.available_count} chưa phân công</span></h2>
+                  <p>Hiển thị ý tưởng chưa phân công và các brief đang có trong Workflow từ cùng dữ liệu.
+                    {currentIdeaLibrary.total_count === 0 && ' Chưa có ý tưởng; hãy bổ sung để đưa vào Workflow.'}</p>
                 </div>
                 <div className="view-controls current-idea-actions">
-                  {ideaLibrary?.available_count ? <button type="button" className="button secondary" onClick={() => void clearCurrentIdeas()} disabled={!!working}>
-                    <Trash2 size={16}/> Xóa toàn bộ ý tưởng
-                  </button> : ideaLibrary && <button type="button" className="button primary" onClick={() => setTab('planner')}>
+                  {currentIdeaLibrary.items.length ? <button type="button" className="button secondary" onClick={() => void clearCurrentIdeas()} disabled={!!working}>
+                    <Trash2 size={16}/> Xóa ý tưởng & Workflow
+                  </button> : !ideaLibraryLoading && <button type="button" className="button primary" onClick={() => setTab('planner')}>
                     <Plus size={16}/> Nạp ý tưởng mới
                   </button>}
                   <button type="button" className="icon-button" aria-label="Làm mới danh sách ý tưởng" onClick={() => void refreshIdeaLibrary()} disabled={ideaLibraryLoading}>
@@ -831,28 +831,29 @@ export default function ThangMiaPage() {
                   {ideaSearch && <button type="button" aria-label="Xóa tìm kiếm" onClick={() => setIdeaSearch('')}><X size={14}/></button>}
                 </div>
                 <select className="vault-sort" value={ideaTheme} onChange={(event) => setIdeaTheme(event.target.value)}>
-                  <option value="all">Tất cả chủ đề ({ideaLibrary?.available_count ?? 0})</option>
-                  {Object.entries(ideaLibrary?.theme_names ?? {}).map(([theme, label]) => (
-                    <option key={theme} value={theme}>{label} ({ideaLibrary?.theme_counts[theme] ?? 0})</option>
+                  <option value="all">Tất cả chủ đề ({currentIdeaLibrary.total_count})</option>
+                  {Object.entries(currentIdeaLibrary.theme_names).map(([theme, label]) => (
+                    <option key={theme} value={theme}>{label} ({currentIdeaLibrary.theme_counts[theme] ?? 0})</option>
                   ))}
                 </select>
                 <span className="current-idea-result">{visibleLibraryIdeas.length} hiển thị</span>
               </div>
-              {ideaLibraryLoading && !ideaLibrary ? <div className="lane-empty"><LoaderCircle size={24}/><span>Đang tải ý tưởng...</span></div> :
-                visibleLibraryIdeas.length ? <div className="current-idea-grid">
+              {visibleLibraryIdeas.length ? <div className="current-idea-grid">
                   {visibleLibraryIdeas.map((idea) => (
                     <article className="vault-card current-idea-card" key={idea.id}>
-                      <div className="card-meta"><span>{ideaLibrary?.theme_names[idea.theme] ?? idea.theme}</span><span className="status-pill ready">{idea.source === 'starter' ? 'Mẫu' : 'Đã bổ sung'}</span></div>
+                      <div className="card-meta"><span>{currentIdeaLibrary.theme_names[idea.theme] ?? idea.theme}</span><span className={`status-pill ${idea.in_workflow && idea.workflow_status ? idea.workflow_status : 'ready'}`}>{idea.in_workflow
+                        ? `Workflow · ${prettyDate(idea.workflow_date || '')} · AI ${idea.workflow_ai} · #${String(idea.workflow_slot).padStart(2, '0')} · ${STATUSES[idea.workflow_status || 'ready']}`
+                        : idea.source === 'starter' ? 'Mẫu · Chưa phân công' : 'Đã bổ sung · Chưa phân công'}</span></div>
                       <h3>{idea.title}</h3>
                       <div className="vault-fields">{FIELD_LABELS.map(({ key, label }) => (
                         <div key={key}><b>{label}</b><span>{idea[key]}</span></div>
                       ))}</div>
                     </article>
                   ))}
-                </div> : <div className="lane-empty">
+                </div> : ideaLibraryLoading && !ideaLibrary ? <div className="lane-empty"><LoaderCircle size={24}/><span>Đang tải ý tưởng...</span></div> : <div className="lane-empty">
                   <Database size={28}/>
-                  <strong>{ideaLibraryLoading ? 'Đang tải ý tưởng...' : 'Không có ý tưởng phù hợp'}</strong>
-                  <span>{ideaLibrary?.available_count ? 'Thử từ khóa hoặc chủ đề khác.' : 'Kho chưa có ý tưởng còn dùng được.'}</span>
+                  <strong>Không có ý tưởng phù hợp</strong>
+                  <span>{currentIdeaLibrary.total_count ? 'Thử từ khóa hoặc chủ đề khác.' : 'Chưa có ý tưởng; hãy nạp ý tưởng mới.'}</span>
                 </div>}
             </section>
           </>}
@@ -969,7 +970,7 @@ export default function ThangMiaPage() {
           </>}
 
           {tab === 'planner' && <>
-            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> IDEA GENERATION</div><h1>Bổ sung <span>ý tưởng</span></h1><p>Tạo 14 brief mới cho mỗi lượt. Có thể nạp vào kho để dùng cho ngày sau hoặc nhập thẳng vào Workflow hiện tại.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
+            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> IDEA GENERATION</div><h1>Bổ sung <span>ý tưởng</span></h1><p>Một lần nhập sẽ đồng thời lưu 14 brief vào Ý tưởng hiện tại và lane AI đã chọn trong Workflow.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
             <div className="planner-grid"><section className="panel planner-step"><div className="panel-step-label">BƯỚC 01 <span>CHỌN LUỒNG AI</span></div>
               <h2>Chọn AI cần bổ sung</h2><p>Mỗi AI tạo đúng 14 brief theo thứ tự 14 nhóm chủ đề.</p>
               <div className="ai-picker">{([1,2,3] as const).map(ai => <button key={ai} className={plannerAi === ai ? 'picked' : ''} onClick={() => setPlannerAi(ai)}><div className={`ai-avatar avatar-${ai}`}><Sparkles size={17}/></div><strong>AI {ai}</strong><small>{overview.items.filter(x => x.ai === ai).length}/14 thẻ</small>{plannerAi === ai && <CheckCircle2 size={17} className="picker-check"/>}</button>)}</div>
@@ -983,8 +984,7 @@ export default function ThangMiaPage() {
               <div className="format-preview"><span>ĐỊNH DẠNG MẪU</span><code>01 || TITLE || PROTAGONIST || ANTAGONIST || UNFAIR ACTION || EVIDENCE || REVERSAL || ENDING</code></div>
               <textarea className="plan-textarea" value={plannerText} onChange={(e) => setPlannerText(e.target.value)} spellCheck={false} placeholder={'01 || Title... || Main character... || Opponent... || Concrete injustice... || Verifiable evidence... || Reversal... || Resolution...\n02 || ...\n...\n14 || ...'} />
               <div className="textarea-foot"><span>Chỉ nhập ý tưởng, không nhập truyện 3.000 từ.</span><div className="planner-import-actions">
-                <button className="button secondary" disabled={!plannerText.trim() || !!working} onClick={() => void replenishIdeaLibrary()}><Database size={16}/> Nạp 14 vào kho</button>
-                <button className="button primary" disabled={!plannerText.trim() || !!working} onClick={() => void importIdeas()}><Plus size={17}/> Nhập vào Workflow <ArrowRight size={16}/></button>
+                <button className="button primary" disabled={!plannerText.trim() || !!working} onClick={() => void importIdeas()}><Plus size={17}/> Nhập ý tưởng <ArrowRight size={16}/></button>
               </div></div>
             </section></div>
           </>}

@@ -102,13 +102,6 @@ def available_library_items(db):
     ]
 
 
-def next_workflow_date(db):
-    candidate = dt.date.today()
-    while candidate.isoformat() in db['days']:
-        candidate += dt.timedelta(days=1)
-    return candidate.isoformat()
-
-
 def archive_duplicate_alerts(db, items, threshold=.28):
     archived = [
         (date, item)
@@ -293,13 +286,34 @@ def create_app(store: Store | None = None) -> FastAPI:
     def idea_library():
         with database.edit() as db:
             purge_expired_archives(db)
-            items = available_library_items(db)
+            available = available_library_items(db)
+            assigned = [
+                {key: item.get(key, '') for key in core.KEYS}
+                | {
+                    'id': item['id'],
+                    'source': item.get('source', 'imported'),
+                    'in_workflow': True,
+                    'workflow_date': date,
+                    'workflow_ai': item['ai'],
+                    'workflow_slot': item['slot'] - ((item['ai'] - 1) * 14),
+                    'workflow_status': item['status'],
+                }
+                for date, day in db['days'].items()
+                for item in day['items']
+                if not item.get('archived_at')
+            ]
+            items = [
+                {**brief, 'in_workflow': False, 'workflow_date': None,
+                 'workflow_ai': None, 'workflow_slot': None, 'workflow_status': None}
+                for brief in available
+            ] + assigned
         theme_order = {theme: index for index, (theme, _) in enumerate(core.THEMES)}
         items.sort(key=lambda brief: (theme_order[brief['theme']], brief['title'].casefold()))
         theme_counts = {theme: 0 for theme, _ in core.THEMES}
         for brief in items:
             theme_counts[brief['theme']] += 1
-        return {'items': items, 'available_count': len(items),
+        return {'items': items, 'available_count': len(available),
+                'workflow_count': len(assigned), 'total_count': len(items),
                 'theme_names': core.THEME_NAME, 'theme_counts': theme_counts,
                 'starter_total': len(core.seed_bank())}
 
@@ -333,71 +347,11 @@ def create_app(store: Store | None = None) -> FastAPI:
             db['retired_idea_ids'] = sorted(retired_ids)
             deleted_ids = set(candidates) - archived_ids
             db['library'] = []
-            db['replenish_workflow'] = True
         return {
             'message': 'Đã xóa ý tưởng chưa dùng và các bài Workflow đang hoạt động.',
             'deleted_count': len(deleted_ids),
             'workflow_cleared_count': cleared_workflow_count,
             'days_preserved': len(db['days']),
-        }
-
-    @app.post('/api/library/import')
-    def import_library_ideas(body: ImportPlan):
-        try:
-            batch = core.parse_planner(body.text, body.ai)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        with database.edit() as db:
-            purge_expired_archives(db)
-            candidates = {brief['id']: brief for brief in core.seed_bank()}
-            candidates.update({brief['id']: brief for brief in db['library']})
-            candidates.update({
-                item['id']: item
-                for day in db['days'].values()
-                for item in day['items']
-                if item.get('id')
-            })
-            existing_ideas = list(candidates.values())
-            alerts = []
-            for index, item in enumerate(batch):
-                rivals = core.unique_candidates(item, existing_ideas + batch[:index], limit=1)
-                if rivals and rivals[0][0] >= .48:
-                    score, other = rivals[0]
-                    alerts.append({
-                        'line': index + 1,
-                        'score': score,
-                        'title': item['title'],
-                        'other_title': other.get('title'),
-                    })
-            if alerts and not body.allow_similar:
-                raise HTTPException(409, {
-                    'code': 'similar_ideas',
-                    'message': 'Phát hiện brief gần giống theo từ khóa.',
-                    'alerts': alerts[:10],
-                })
-            for item in batch:
-                db['library'].append(
-                    {key: item[key] for key in core.KEYS}
-                    | {'id': item['id'], 'source': 'imported'}
-                )
-            library_size = len(batch)
-            workflow_date = None
-            workflow_warnings = []
-            if db.get('replenish_workflow'):
-                workflow_date = next_workflow_date(db)
-                ok, _ = core.new_day(db, workflow_date)
-                if ok:
-                    workflow_warnings = archive_duplicate_alerts(
-                        db, db['days'][workflow_date]['items']
-                    )
-                    db['replenish_workflow'] = False
-                else:
-                    workflow_date = None
-        return {
-            'message': f'Đã nạp {library_size} ý tưởng mới vào kho.',
-            'count': library_size,
-            'workflow_date': workflow_date,
-            'archive_duplicates': workflow_warnings,
         }
 
     @app.post('/api/library/reset')

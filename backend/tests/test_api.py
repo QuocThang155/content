@@ -57,7 +57,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.create('2026-11-10').status_code, 409)
         self.assertEqual(self.create(self.date).status_code, 409)
 
-    def test_current_idea_library_shows_only_unassigned_ideas(self):
+    def test_current_idea_library_shows_available_and_workflow_ideas(self):
         response = self.client.get('/api/library')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['available_count'], 126)
@@ -68,15 +68,92 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['available_count'], 84)
+        self.assertEqual(response.json()['workflow_count'], 42)
+        self.assertEqual(response.json()['total_count'], 126)
+        visible = {item['id']: item for item in response.json()['items']}
+        self.assertTrue(assigned_ids.issubset(visible))
+        self.assertTrue(all(visible[idea_id]['in_workflow'] for idea_id in assigned_ids))
+        self.assertEqual(
+            {visible[idea_id]['workflow_status'] for idea_id in assigned_ids},
+            {'ready'},
+        )
         self.assertEqual(
             self.client.get('/api/overview', params={'date': self.date}).json()['library_size'],
             84,
         )
         self.assertEqual(self.client.get('/api/history').json()['library_size'], 84)
-        self.assertFalse(assigned_ids & {item['id'] for item in response.json()['items']})
         self.assertEqual(set(response.json()['theme_counts']), {theme for theme, _ in core.THEMES})
 
-    def test_clear_current_ideas_resets_workflow_then_allocates_new_ideas(self):
+    def test_imported_ideas_are_saved_to_library_and_workflow_together(self):
+        self.assertEqual(self.create().status_code, 201)
+        original = self.client.get('/api/overview', params={'date': self.date}).json()
+        payload = {
+            'ai': 1,
+            'text': self.planner_lines(),
+            'replace_ready': True,
+            'allow_similar': True,
+        }
+
+        imported = self.client.post(f'/api/days/{self.date}/plan', json=payload)
+
+        self.assertEqual(imported.status_code, 200, imported.text)
+        workflow = self.client.get('/api/overview', params={'date': self.date}).json()
+        workflow_items = [item for item in workflow['items'] if item['ai'] == 1]
+        self.assertEqual(len(workflow_items), 14)
+        self.assertTrue(all(item['id'].startswith('CUSTOM-') for item in workflow_items))
+        self.assertEqual(imported.json()['count'], 14)
+
+        library = self.client.get('/api/library').json()
+        library_items = {item['id']: item for item in library['items']}
+        for item in workflow_items:
+            current_idea = library_items[item['id']]
+            self.assertTrue(current_idea['in_workflow'])
+            self.assertEqual(current_idea['workflow_date'], self.date)
+            self.assertEqual(current_idea['workflow_ai'], 1)
+            self.assertEqual(current_idea['workflow_slot'], item['slot'])
+            self.assertEqual(current_idea['workflow_status'], item['status'])
+        self.assertEqual(library['workflow_count'], 42)
+        self.assertEqual(library['total_count'], len(library['items']))
+        self.assertEqual(workflow['stats']['total'], original['stats']['total'])
+
+    def test_14_ai1_workflow_ideas_are_visible_and_cleared_with_library(self):
+        imported = self.client.post(f'/api/days/{self.date}/plan', json={
+            'ai': 1,
+            'text': self.planner_lines(),
+            'allow_similar': True,
+        })
+        self.assertEqual(imported.status_code, 200, imported.text)
+
+        workflow = self.client.get('/api/overview', params={'date': self.date}).json()
+        ai1_items = [item for item in workflow['items'] if item['ai'] == 1]
+        library = self.client.get('/api/library').json()
+        library_items = {item['id']: item for item in library['items']}
+        self.assertEqual(len(ai1_items), 14)
+        self.assertEqual(library['workflow_count'], 14)
+        self.assertEqual(library['total_count'], len(library['items']))
+        self.assertEqual(
+            sum(item['in_workflow'] and item['workflow_ai'] == 1 for item in library['items']),
+            14,
+        )
+        for item in ai1_items:
+            current_idea = library_items[item['id']]
+            self.assertTrue(current_idea['in_workflow'])
+            self.assertEqual(current_idea['workflow_ai'], 1)
+            self.assertEqual(current_idea['workflow_status'], item['status'])
+
+        cleared = self.client.delete('/api/library')
+
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(cleared.json()['workflow_cleared_count'], 14)
+        library_after_delete = self.client.get('/api/library').json()
+        self.assertEqual(library_after_delete['items'], [])
+        self.assertEqual(library_after_delete['workflow_count'], 0)
+        self.assertEqual(
+            self.client.get('/api/overview', params={'date': self.date}).json()['items'],
+            [],
+        )
+
+    def test_clear_current_ideas_then_each_import_updates_workflow(self):
         self.assertEqual(self.create().status_code, 201)
         self.assertEqual(self.create('2026-11-08').status_code, 201)
         original = self.client.get('/api/overview', params={'date': self.date}).json()
@@ -114,40 +191,31 @@ class ApiTests(unittest.TestCase):
         )
         planned_batch = '\n'.join([duplicate_line, *self.planner_lines().splitlines()[1:]])
 
-        created_workflow = None
-        for expected_count, expected_workflow_count in ((14, 0), (28, 0), (0, 42)):
-            imported = self.client.post('/api/library/import', json={
-                'ai': 1,
+        workflow_date = '2026-11-10'
+        for ai in (1, 2, 3):
+            imported = self.client.post(f'/api/days/{workflow_date}/plan', json={
+                'ai': ai,
                 'text': planned_batch,
                 'allow_similar': True,
             })
             self.assertEqual(imported.status_code, 200, imported.text)
-            self.assertEqual(
-                self.client.get('/api/library').json()['available_count'],
-                expected_count,
-            )
-            if expected_workflow_count:
-                created_workflow = imported.json()
-                self.assertEqual(
-                    self.client.get('/api/overview', params={
-                        'date': created_workflow['workflow_date'],
-                    }).json()['stats']['total'],
-                    expected_workflow_count,
-                )
+            workflow = self.client.get('/api/overview', params={
+                'date': workflow_date,
+            }).json()
+            self.assertEqual(workflow['stats']['total'], 14 * ai)
+            library = self.client.get('/api/library').json()
+            self.assertEqual(library['workflow_count'], 14 * ai)
+            self.assertEqual(library['available_count'], 0)
+            self.assertEqual(library['total_count'], 14 * ai)
 
-        self.assertIsNotNone(created_workflow)
-        self.assertTrue(created_workflow['workflow_date'])
-        self.assertTrue(any(
-            warning['archive_title'] == archived['title']
-            for warning in created_workflow['archive_duplicates']
-        ))
-        new_items = self.client.get('/api/overview', params={
-            'date': created_workflow['workflow_date'],
+        workflow_items = self.client.get('/api/overview', params={
+            'date': workflow_date,
         }).json()['items']
-        self.assertEqual(len(new_items), 42)
-        self.assertTrue(all(item['id'].startswith('CUSTOM-') for item in new_items))
+        self.assertEqual(len(workflow_items), 42)
+        self.assertEqual({item['ai'] for item in workflow_items}, {1, 2, 3})
+        self.assertTrue(all(item['id'].startswith('CUSTOM-') for item in workflow_items))
 
-        scan = self.client.get('/api/days/' + created_workflow['workflow_date'] + '/scan')
+        scan = self.client.get('/api/days/' + workflow_date + '/scan')
         self.assertEqual(scan.status_code, 200, scan.text)
         self.assertTrue(any(
             pair['second'].get('archived')

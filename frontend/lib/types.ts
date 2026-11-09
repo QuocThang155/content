@@ -5,10 +5,16 @@ export type BriefFields = {
   title: string; hero: string; antagonist: string; conflict: string;
   evidence: string; reversal: string; ending: string;
 };
-export type IdeaLibraryItem = BriefFields & { id: string; theme: string; source: string };
+export type IdeaLibraryItem = BriefFields & {
+  id: string; theme: string; source: string; in_workflow: boolean;
+  workflow_date: string | null; workflow_ai: 1 | 2 | 3 | null;
+  workflow_slot: number | null; workflow_status: Status | null;
+};
 export type IdeaLibraryData = {
   items: IdeaLibraryItem[];
   available_count: number;
+  workflow_count: number;
+  total_count: number;
   theme_names: Record<string, string>;
   theme_counts: Record<string, number>;
 };

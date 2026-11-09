@@ -202,6 +202,8 @@ Thẻ `done` không thể hoàn tác sao chép trực tiếp. Người dùng ph�
   yêu cầu xác nhận trước khi tiếp tục.
 - Lane chỉ được ghi đè khi người dùng xác nhận và toàn bộ thẻ cũ vẫn là `ready`.
 - Brief nhập thủ công có ID dạng `CUSTOM-*` và không tái sử dụng starter ID.
+- Một nút **Nhập ý tưởng** lưu cùng 14 brief vào thư viện và lane AI đã chọn
+  trong một giao dịch; nếu Workflow hiện tại có thẻ đã giao thì thao tác bị từ chối.
 
 ### 4.5. Kiểm tra trùng ý tưởng
 
@@ -262,23 +264,23 @@ trống.
 
 ### 4.9. Ý tưởng hiện tại và đồng bộ dữ liệu
 
-Trang **Ý tưởng hiện tại** liệt kê các brief còn có thể dùng trong thư viện,
-bao gồm mẫu chưa dùng và ý tưởng đã bổ sung. Brief đã được phân cho bất kỳ ngày
-nào sẽ không xuất hiện trong danh sách này. Có thể tìm kiếm trong nội dung và
-lọc theo chủ đề; bộ đếm cập nhật theo số ý tưởng còn dùng được. Nút **Xóa toàn
-bộ ý tưởng** xóa các brief chưa dùng và toàn bộ bài Workflow đang hoạt động trên
+Trang **Ý tưởng hiện tại** liệt kê cả brief chưa phân công lẫn brief đang có
+trong Workflow; brief trong Workflow hiển thị ngày, AI, slot và trạng thái từ
+cùng bản ghi. Có thể tìm kiếm trong nội dung và lọc theo chủ đề; bộ đếm tách
+ý tưởng chưa phân công khỏi số đang có trong Workflow. Nút **Xóa ý tưởng &
+Workflow** xóa các brief chưa dùng và toàn bộ bài Workflow đang hoạt động trên
 mọi ngày; các ngày lịch sử vẫn được giữ lại ở trạng thái rỗng. Kho lưu trữ,
 prompt và file TXT/ảnh trong Workspace không bị xóa. Ý tưởng đã xóa không được
-tái sử dụng. Dùng **Bổ sung ý tưởng** và chọn **Nạp 14 vào kho**; khi đủ 42
-brief mới (ba brief cho mỗi chủ đề), ứng dụng tự tạo một ngày Workflow mới và
-chia 14 bài cho mỗi AI.
+tái sử dụng. Dùng **Bổ sung ý tưởng** và nút **Nhập ý tưởng**; cùng 14 brief
+được ghi vào thư viện và Workflow của AI/ngày đã chọn. Nếu lane có brief đã
+được giao hoặc hoàn tất, ứng dụng không ghi đè chúng.
 
 Khi tạo Workflow hoặc rà soát ý tưởng trong ngày, ứng dụng so sánh brief với
 các bài trong Kho lưu trữ và cảnh báo các cặp gần giống để người dùng kiểm tra.
 
-Màn hình **Kho ý tưởng** riêng (bảng 42 bài theo lane) đã được gỡ bỏ; các bài
-đã phân công được quản lý trực tiếp trong **Workflow**, còn các brief chưa phân
-công nằm ở **Ý tưởng hiện tại**. Tổng quan được tải lại khi đổi ngày; thư viện,
+Màn hình **Kho ý tưởng** riêng (bảng 42 bài theo lane) đã được gỡ bỏ; **Ý tưởng
+hiện tại** và **Workflow** hiển thị cùng dữ liệu brief, trạng thái và lane.
+Tổng quan được tải lại khi đổi ngày; thư viện,
 lịch sử và kho lưu trữ chỉ được tải khi mở trang tương ứng hoặc sau thao tác
 làm thay đổi dữ liệu đó. Trong Workflow, trạng thái Workspace tự làm mới mỗi
 30 giây khi tab đang hiển thị; có thể yêu cầu làm mới ngay bằng nút **Làm mới file**.
@@ -323,9 +325,8 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | GET | `/api/overview?date=YYYY-MM-DD` | Lấy thẻ và thống kê của ngày; prompt được lấy riêng sau khi template đã cấu hình |
 | POST | `/api/days` | Tạo ngày, phân bổ 42 brief và cảnh báo brief gần giống Kho lưu trữ |
 | GET | `/api/history` | Lấy lịch sử các ngày |
-| GET | `/api/library` | Lấy danh sách ý tưởng chưa được phân vào ngày nào |
+| GET | `/api/library` | Lấy ý tưởng chưa phân công và ý tưởng đang ở Workflow kèm trạng thái |
 | DELETE | `/api/library` | Xóa ý tưởng chưa dùng và bài Workflow đang hoạt động; giữ lịch sử rỗng và Kho lưu trữ |
-| POST | `/api/library/import` | Nạp 14 brief mới; sau khi xóa, tự tạo Workflow khi đủ 42 brief |
 | POST | `/api/library/reset` | Tạo kho 42 ý tưởng mới từ các ý tưởng chưa dùng |
 | GET | `/api/archive` | Lấy các bài đang lưu trữ; tự dọn bài quá 2 ngày |
 | GET | `/api/days/{date}/items/{uid}/prompt?mode=...` | Sinh prompt `full`, `part1` hoặc `part2` |
@@ -341,7 +342,7 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | GET | `/api/days/{date}/scan` | Rà trùng trong ngày và so sánh với Kho lưu trữ |
 | POST | `/api/days/{date}/items/{uid}/scan` | Rà trùng một brief, kể cả nội dung đang sửa |
 | GET | `/api/planning-prompt?date=...&ai=...` | Lấy prompt lập kế hoạch 14 brief |
-| POST | `/api/days/{date}/plan` | Nhập một batch 14 brief |
+| POST | `/api/days/{date}/plan` | Ghi cùng batch 14 brief vào thư viện và lane Workflow trong một giao dịch |
 | GET | `/api/backup` | Tải JSON schema v2 |
 | POST | `/api/restore` | Kiểm tra và thay thế dữ liệu bằng JSON schema v2 |
 | POST | `/api/workspace/export` | Xuất prompt Full TXT cho các brief chưa lưu trữ trong lane |
