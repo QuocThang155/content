@@ -116,6 +116,41 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(library['total_count'], len(library['items']))
         self.assertEqual(workflow['stats']['total'], original['stats']['total'])
 
+    def test_import_replaces_ready_lane_without_overwriting_archived_story(self):
+        self.assertEqual(self.create().status_code, 201)
+        original = self.client.get('/api/overview', params={'date': self.date}).json()
+        archived_story = next(item for item in original['items'] if item['ai'] == 1)
+        archive_url = f'/api/days/{self.date}/items/{archived_story["uid"]}'
+        self.assertEqual(
+            self.client.post(archive_url + '/copied', json={'mode': 'full'}).status_code,
+            200,
+        )
+        self.assertEqual(self.client.post(archive_url + '/toggle-done').status_code, 200)
+        self.assertEqual(self.client.post(archive_url + '/archive').status_code, 200)
+        self.assertEqual(
+            len([item for item in self.client.get('/api/overview', params={'date': self.date}).json()['items']
+                 if item['ai'] == 1]),
+            13,
+        )
+
+        imported = self.client.post(f'/api/days/{self.date}/plan', json={
+            'ai': 1,
+            'text': self.planner_lines(),
+            'replace_ready': True,
+            'allow_similar': True,
+        })
+
+        self.assertEqual(imported.status_code, 200, imported.text)
+        current_items = self.client.get('/api/overview', params={'date': self.date}).json()['items']
+        self.assertEqual(len([item for item in current_items if item['ai'] == 1]), 14)
+        archived_items = self.client.get('/api/archive').json()['items']
+        self.assertTrue(any(item['uid'] == archived_story['uid'] for item in archived_items))
+        stored_day = self.store.read()['days'][self.date]['items']
+        self.assertTrue(any(
+            item['uid'] == archived_story['uid'] and item.get('archived_at')
+            for item in stored_day
+        ))
+
     def test_14_ai1_workflow_ideas_are_visible_and_cleared_with_library(self):
         imported = self.client.post(f'/api/days/{self.date}/plan', json={
             'ai': 1,
@@ -394,6 +429,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(url, json={'ai':1,'text':self.planner_lines(),'replace_ready':True}).status_code, 409)
         self.assertEqual(self.client.get('/api/history').status_code, 200)
         self.assertIn('14', self.client.get('/api/planning-prompt',params={'date':self.date,'ai':1}).json()['text'])
+
+    def test_planning_prompt_can_be_customized_and_reset(self):
+        url = f'/api/planning-prompt?date={self.date}&ai=1'
+        default = self.client.get(url)
+        self.assertEqual(default.status_code, 200, default.text)
+        self.assertFalse(default.json()['custom'])
+
+        custom_text = 'Write 14 short ideas using my own preferred style.'
+        saved = self.client.put('/api/planning-prompt', json={'content': custom_text})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json(), {'text': custom_text, 'custom': True})
+        self.assertEqual(self.client.get(url).json(), {'text': custom_text, 'custom': True})
+
+        reset = self.client.delete(url)
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertFalse(reset.json()['custom'])
+        self.assertEqual(reset.json()['text'], default.json()['text'])
 
     def test_new_day_import_after_exhaust(self):
         self.create()

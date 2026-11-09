@@ -220,6 +220,10 @@ class PromptTemplateBody(BaseModel):
     content: str = Field(max_length=200000)
 
 
+class PlanningPromptBody(BaseModel):
+    content: str = Field(min_length=1, max_length=200000)
+
+
 class PromptPreview(BaseModel):
     date: str
     uid: str
@@ -781,7 +785,27 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get('/api/planning-prompt')
     def plan_prompt(date: str, ai: int = Query(..., ge=1, le=3)):
         valid_date(date)
-        return {'text': core.planning_prompt(database.read(), date, ai)}
+        db = database.read()
+        custom_prompt = db.get('planning_prompt', '')
+        return {'text': custom_prompt or core.planning_prompt(db, date, ai),
+                'custom': bool(custom_prompt)}
+
+    @app.put('/api/planning-prompt')
+    def save_planning_prompt(body: PlanningPromptBody):
+        content = body.content.strip()
+        if not content:
+            raise HTTPException(422, 'Prompt không được để trống.')
+        with database.edit() as db:
+            db['planning_prompt'] = content
+        return {'text': content, 'custom': True}
+
+    @app.delete('/api/planning-prompt')
+    def reset_planning_prompt(date: str, ai: int = Query(..., ge=1, le=3)):
+        valid_date(date)
+        with database.edit() as db:
+            db['planning_prompt'] = ''
+            default_prompt = core.planning_prompt(db, date, ai)
+        return {'text': default_prompt, 'custom': False}
 
     @app.post('/api/days/{date}/plan')
     def import_plan(date: str, body: ImportPlan):
@@ -793,12 +817,18 @@ def create_app(store: Store | None = None) -> FastAPI:
         with database.edit() as db:
             day = db['days'].get(date)
             existing = day['items'] if day else []
-            old_lane = [s for s in existing if s.get('ai') == body.ai]
+            old_lane = [
+                s for s in existing
+                if s.get('ai') == body.ai and not s.get('archived_at')
+            ]
             if any(s.get('status') != 'ready' for s in old_lane):
                 raise HTTPException(409, 'AI này đã có thẻ được giao hoặc hoàn tất; không cho phép ghi đè.')
             if old_lane and not body.replace_ready:
                 raise HTTPException(409, {'code': 'replace_ready', 'message': 'Xác nhận thay thế lane có thẻ chưa giao.'})
-            other_items = [s for s in existing if s.get('ai') != body.ai]
+            other_items = [
+                s for s in existing
+                if s.get('ai') != body.ai or s.get('archived_at')
+            ]
             historical = core.all_archived(db, exclude_date=date)
             alerts = []
             for i, item in enumerate(batch):

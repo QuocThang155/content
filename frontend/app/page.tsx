@@ -101,6 +101,9 @@ export default function ThangMiaPage() {
   const [form, setForm] = useState<BriefFields | null>(null);
   const [report, setReport] = useState<SimilarityReport | null>(null);
   const [plannerAi, setPlannerAi] = useState<1 | 2 | 3>(1);
+  const [planningPrompt, setPlanningPrompt] = useState('');
+  const [planningPromptCustom, setPlanningPromptCustom] = useState(false);
+  const [planningPromptLoading, setPlanningPromptLoading] = useState(false);
   const [plannerText, setPlannerText] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [laneCursors, setLaneCursors] = useState<Record<1 | 2 | 3, number>>({ 1: 0, 2: 0, 3: 0 });
@@ -425,11 +428,51 @@ export default function ThangMiaPage() {
   }
   async function copyPlanningPrompt() {
     await execute('plan-copy', async () => {
-      const r = await api<{ text: string }>(`/planning-prompt?date=${date}&ai=${plannerAi}`);
-      await copyClipboard(r.text);
+      if (!planningPrompt.trim()) throw new Error('Prompt đang trống.');
+      await copyClipboard(planningPrompt);
       toast(`Đã sao chép lệnh tạo 14 brief cho AI ${plannerAi}.`);
     });
   }
+  const loadPlanningPrompt = useCallback(async () => {
+    setPlanningPromptLoading(true);
+    try {
+      const result = await api<{ text: string; custom: boolean }>(
+        `/planning-prompt?date=${date}&ai=${plannerAi}`,
+      );
+      setPlanningPrompt(result.text);
+      setPlanningPromptCustom(result.custom);
+    } catch (err) {
+      toast(messageOf(err), 'error');
+    } finally {
+      setPlanningPromptLoading(false);
+    }
+  }, [date, plannerAi]);
+  async function savePlanningPrompt() {
+    await execute('planning-prompt-save', async () => {
+      const result = await api<{ text: string; custom: boolean }>('/planning-prompt', {
+        method: 'PUT',
+        body: JSON.stringify({ content: planningPrompt }),
+      });
+      setPlanningPrompt(result.text);
+      setPlanningPromptCustom(result.custom);
+      toast('Đã lưu prompt bổ sung ý tưởng.');
+    });
+  }
+  async function resetPlanningPrompt() {
+    await execute('planning-prompt-reset', async () => {
+      const result = await api<{ text: string; custom: boolean }>(
+        `/planning-prompt?date=${date}&ai=${plannerAi}`,
+        { method: 'DELETE' },
+      );
+      setPlanningPrompt(result.text);
+      setPlanningPromptCustom(result.custom);
+      toast('Đã khôi phục prompt mẫu.');
+    });
+  }
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (tab === 'planner') void loadPlanningPrompt();
+  }, [tab, loadPlanningPrompt]);
   const loadPromptTemplates = useCallback(async () => {
     setPromptLoading(true);
     try {
@@ -632,9 +675,12 @@ export default function ThangMiaPage() {
   }
   async function importIdeas() {
     await execute('plan-import', async () => {
-      const oldLane = overview.items.filter((x) => x.ai === plannerAi);
+      const currentOverview = await api<Overview>(`/overview?date=${encodeURIComponent(date)}`);
+      setOverview(currentOverview);
+      const oldLane = currentOverview.items.filter((x) => x.ai === plannerAi);
       if (oldLane.some((x) => x.status !== 'ready')) {
-        toast(`AI ${plannerAi} đã có thẻ được giao; không thể ghi đè.`, 'error'); return;
+        const blocked = oldLane.filter((x) => x.status !== 'ready');
+        toast(`AI ${plannerAi} có ${blocked.length} thẻ đã giao/hoàn tất; không thể ghi đè.`, 'error'); return;
       }
       let replaceReady = false;
       if (oldLane.length) {
@@ -656,6 +702,19 @@ export default function ThangMiaPage() {
             const warnings = (detail.alerts || []).map((x) => `${x.line}. ${x.title} ↔ ${x.other_title} (${Math.round(x.score * 100)}%)`).join('\n');
             if (!window.confirm(`Cảnh báo trùng từ khóa:\n${warnings}\n\nVẫn nhập 14 ý tưởng?`)) return;
             allowSimilar = true; continue;
+          }
+          if (err instanceof ApiError && err.status === 409
+            && typeof err.detail === 'string'
+            && err.detail.includes('không cho phép ghi đè')) {
+            const latestOverview = await api<Overview>(`/overview?date=${encodeURIComponent(date)}`);
+            setOverview(latestOverview);
+            const latestLane = latestOverview.items.filter((x) => x.ai === plannerAi);
+            const blocked = latestLane.filter((x) => x.status !== 'ready');
+            toast(blocked.length
+              ? `Backend ghi nhận AI ${plannerAi} có ${blocked.length} thẻ đã giao/hoàn tất nên không thể ghi đè. Dữ liệu Workflow đã được làm mới.`
+              : `Backend từ chối ghi đè AI ${plannerAi}, nhưng Workflow ngày ${prettyDate(date)} hiện không có thẻ. Hãy kiểm tra/restart backend đang phục vụ API rồi thử lại.`,
+            'error');
+            return;
           }
           throw err;
         }
@@ -970,17 +1029,23 @@ export default function ThangMiaPage() {
           </>}
 
           {tab === 'planner' && <>
-            <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line"/> IDEA GENERATION</div><h1>Bổ sung <span>ý tưởng</span></h1><p>Một lần nhập sẽ đồng thời lưu 14 brief vào Ý tưởng hiện tại và lane AI đã chọn trong Workflow.</p></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
-            <div className="planner-grid"><section className="panel planner-step"><div className="panel-step-label">BƯỚC 01 <span>CHỌN LUỒNG AI</span></div>
-              <h2>Chọn AI cần bổ sung</h2><p>Mỗi AI tạo đúng 14 brief theo thứ tự 14 nhóm chủ đề.</p>
+            <div className="page-heading planner-page-heading"><div><h1>Bổ sung <span>ý tưởng</span></h1></div><div className="view-controls"><div className="date-control"><CalendarDays size={17}/><input aria-label="Ngày làm việc" type="date" value={date} onChange={(e) => { if (e.target.value) setDate(e.target.value); }}/></div><button className="icon-button" aria-label="Làm mới dữ liệu" title="Làm mới" onClick={() => void refresh(date, false)}><RefreshCw size={18}/></button></div></div>
+            <div className="planner-grid"><section className="panel planner-step">
+              <h2>Chọn AI cần bổ sung</h2>
               <div className="ai-picker">{([1,2,3] as const).map(ai => <button key={ai} className={plannerAi === ai ? 'picked' : ''} onClick={() => setPlannerAi(ai)}><div className={`ai-avatar avatar-${ai}`}><Sparkles size={17}/></div><strong>AI {ai}</strong><small>{overview.items.filter(x => x.ai === ai).length}/14 thẻ</small>{plannerAi === ai && <CheckCircle2 size={17} className="picker-check"/>}</button>)}</div>
-              <div className="step-divider"/><div className="panel-step-label">BƯỚC 02 <span>TẠO PROMPT Ý TƯỞNG</span></div>
-              <h2>Sao chép lệnh lập kế hoạch</h2><p>Gửi prompt này vào giao diện AI mà bạn đang dùng. AI sẽ trả về đúng 14 dòng theo định dạng yêu cầu.</p>
-              <button className="button primary full big" onClick={() => void copyPlanningPrompt()} disabled={!!working}><Clipboard size={17}/> Sao chép lệnh tạo 14 ý tưởng <ArrowRight size={17}/></button>
-              <div className="info-note"><CircleHelp size={18}/><span>Ứng dụng chỉ lưu brief ngắn, không yêu cầu dán lại toàn bộ truyện hoàn chỉnh.</span></div>
+              <div className="step-divider"/>
+              <h2 className="planner-prompt-title">Prompt tạo ý tưởng</h2>
+              <textarea className="plan-textarea" rows={8} value={planningPrompt} onChange={(event) => setPlanningPrompt(event.target.value)} spellCheck={false} disabled={planningPromptLoading} placeholder="Nhập prompt hướng dẫn AI tạo 14 brief..." />
+              <div className="dialog-actions">
+                <div className="dialog-right-actions">
+                  <button className="button secondary" onClick={() => void resetPlanningPrompt()} disabled={!planningPromptCustom || !!working || planningPromptLoading}>Khôi phục prompt mẫu</button>
+                  <button className="button secondary" onClick={() => void savePlanningPrompt()} disabled={!planningPrompt.trim() || !!working || planningPromptLoading}><Check size={16}/> Lưu prompt</button>
+                  <button className="button primary" onClick={() => void copyPlanningPrompt()} disabled={!planningPrompt.trim() || !!working || planningPromptLoading}><Clipboard size={17}/> Sao chép prompt</button>
+                </div>
+              </div>
             </section>
-            <section className="panel planner-input"><div className="panel-step-label">BƯỚC 03 <span>NHẬP KẾT QUẢ TỪ AI {plannerAi}</span></div>
-              <div className="planner-input-head"><div><h2>Dán 14 dòng brief</h2><p>1 dòng = 1 ý tưởng, gồm 8 cột cách nhau bởi <code> || </code>.</p></div><span className={`line-counter ${plannedLines === 14 ? 'counter-valid' : ''}`}>{plannedLines} / 14 dòng</span></div>
+            <section className="panel planner-input">
+              <div className="planner-input-head"><div><h2>Dán prompt</h2><p>1 dòng = 1 ý tưởng, gồm 8 cột cách nhau bởi <code> || </code>.</p></div><span className={`line-counter ${plannedLines === 14 ? 'counter-valid' : ''}`}>{plannedLines} / 14 dòng</span></div>
               <div className="format-preview"><span>ĐỊNH DẠNG MẪU</span><code>01 || TITLE || PROTAGONIST || ANTAGONIST || UNFAIR ACTION || EVIDENCE || REVERSAL || ENDING</code></div>
               <textarea className="plan-textarea" value={plannerText} onChange={(e) => setPlannerText(e.target.value)} spellCheck={false} placeholder={'01 || Title... || Main character... || Opponent... || Concrete injustice... || Verifiable evidence... || Reversal... || Resolution...\n02 || ...\n...\n14 || ...'} />
               <div className="textarea-foot"><span>Chỉ nhập ý tưởng, không nhập truyện 3.000 từ.</span><div className="planner-import-actions">
@@ -1000,7 +1065,6 @@ export default function ThangMiaPage() {
               <div className="danger-note"><AlertCircle size={17}/> Khôi phục sẽ ghi đè toàn bộ dữ liệu hiện có. Hãy tải bản sao trước.</div>
             </section></div>
           </>}
-          <div className="page-footer"><span><ShieldCheck size={14}/> Offline-first · Không API AI · Không lưu toàn văn truyện</span>          <span>THẮNG MIA Web Studio v3.3.0</span></div>
         </div>
       </main>
 

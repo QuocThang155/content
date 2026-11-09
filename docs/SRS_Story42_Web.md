@@ -43,6 +43,8 @@
 | GET | `/api/days/{date}/scan` | Scan similarity in day |
 | POST | `/api/days/{date}/items/{uid}/scan` | Scan individual brief, including proposed edits |
 | GET | `/api/planning-prompt?date=...&ai=1` | Get batch creation prompt |
+| PUT | `/api/planning-prompt` | Save the custom batch creation prompt |
+| DELETE | `/api/planning-prompt?date=...&ai=1` | Clear the custom prompt and restore the generated default |
 | POST | `/api/days/{date}/plan` | Import 14-line batch |
 | GET | `/api/backup` | Export JSON v2 |
 | POST | `/api/restore` | Validate and replace database from JSON v2 |

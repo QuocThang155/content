@@ -262,6 +262,11 @@ trả lỗi rõ ràng; trạng thái brief không thay đổi. Backup/restore JS
 trường `prompt_templates`; backup cũ không có trường này được coi là bốn mẫu
 trống.
 
+Màn hình **Bổ sung ý tưởng** có prompt riêng có thể chỉnh sửa và lưu để dùng
+lại. Nút **Sao chép prompt** sao chép đúng nội dung đang hiển thị; **Khôi phục
+prompt mẫu** xóa prompt tùy chỉnh và tạo lại prompt mặc định theo ngày/AI đang
+chọn. Prompt tùy chỉnh được lưu cùng dữ liệu và có trong backup JSON.
+
 ### 4.9. Ý tưởng hiện tại và đồng bộ dữ liệu
 
 Trang **Ý tưởng hiện tại** liệt kê cả brief chưa phân công lẫn brief đang có
@@ -342,6 +347,8 @@ Các endpoint dưới đây có tiền tố `/api`. FastAPI tự sinh tài liệ
 | GET | `/api/days/{date}/scan` | Rà trùng trong ngày và so sánh với Kho lưu trữ |
 | POST | `/api/days/{date}/items/{uid}/scan` | Rà trùng một brief, kể cả nội dung đang sửa |
 | GET | `/api/planning-prompt?date=...&ai=...` | Lấy prompt lập kế hoạch 14 brief |
+| PUT | `/api/planning-prompt` | Lưu prompt bổ sung ý tưởng tùy chỉnh |
+| DELETE | `/api/planning-prompt?date=...&ai=...` | Xóa prompt tùy chỉnh và khôi phục prompt mẫu |
 | POST | `/api/days/{date}/plan` | Ghi cùng batch 14 brief vào thư viện và lane Workflow trong một giao dịch |
 | GET | `/api/backup` | Tải JSON schema v2 |
 | POST | `/api/restore` | Kiểm tra và thay thế dữ liệu bằng JSON schema v2 |

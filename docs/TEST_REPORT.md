@@ -2,11 +2,11 @@
 
 Verified in the development environment on 2026-11-09:
 
-- `python -m unittest backend.tests.test_api -q`: **29/29 pass**.
+- `python -m unittest backend.tests.test_api -q`: **31/31 pass**.
 - `npm run lint`: **pass**.
 - `npm run typecheck`: **pass**.
 - `npm run build`: **pass**.
 - `git diff --check`: **pass**.
 
-The frontend and backend were stopped after verification as requested; a live
-browser smoke test was not rerun in this verification pass.
+The frontend and backend were not started; a live browser smoke test was not
+run in this verification pass.

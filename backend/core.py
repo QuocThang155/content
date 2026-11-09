@@ -246,7 +246,8 @@ def unique_candidates(item, candidates, limit=5):
 
 def default_db():
     return {'version': 2, 'library': seed_bank(), 'days': {}, 'history': [], 'retired_idea_ids': [],
-            'prompt_templates': {'full': '', 'part1': '', 'part2': '', 'image': ''}}
+            'prompt_templates': {'full': '', 'part1': '', 'part2': '', 'image': ''},
+            'planning_prompt': ''}
 
 
 def normalized_db(raw):
@@ -269,6 +270,9 @@ def normalized_db(raw):
         value = templates.setdefault(mode, '')
         if not isinstance(value, str):
             raise ValueError(f'Template {mode} phải là chuỗi.')
+    planning_prompt = raw.setdefault('planning_prompt', '')
+    if not isinstance(planning_prompt, str):
+        raise ValueError('Prompt bổ sung ý tưởng phải là chuỗi.')
     for day in raw['days'].values():
         for item in day['items']:
             item.setdefault('notes', '')
