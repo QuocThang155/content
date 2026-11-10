@@ -2,7 +2,7 @@
 
 Verified in the development environment on 2026-11-09:
 
-- `python -m unittest backend.tests.test_api -q`: **31/31 pass**.
+- `python -m unittest backend.tests.test_api -q`: **32/32 pass**.
 - `npm run lint`: **pass**.
 - `npm run typecheck`: **pass**.
 - `npm run build`: **pass**.

@@ -38,6 +38,38 @@ class ApiTests(unittest.TestCase):
             for n in range(1, 15)
         )
 
+    def test_similarity_detects_paraphrases_but_not_shared_setting_alone(self):
+        original = {
+            'title': 'The Missing Payroll Ledger',
+            'hero': 'A junior payroll clerk',
+            'antagonist': 'The office manager',
+            'conflict': 'The manager hid the signed payroll sheets and blamed the clerk for missing wages',
+            'evidence': 'A dated payroll folder and bank transfer records',
+            'reversal': 'An audit showed the manager moved the sheets to conceal an unauthorized deduction',
+            'ending': 'The clerk was cleared and payroll controls were repaired',
+        }
+        paraphrase = {
+            'title': 'The Hidden Wage Records',
+            'hero': 'A junior payroll assistant',
+            'antagonist': 'The office supervisor',
+            'conflict': 'The supervisor concealed signed wage records then accused the assistant of losing pay documents',
+            'evidence': 'Timestamped payroll files and bank payment records',
+            'reversal': 'An audit proved the supervisor relocated the files to hide an improper deduction',
+            'ending': 'The assistant was cleared and the payroll review process was fixed',
+        }
+        same_setting_different_plot = {
+            'title': 'The Night Garden Map',
+            'hero': 'A junior payroll clerk',
+            'antagonist': 'The office manager',
+            'conflict': 'The manager assigned a garden plot to another volunteer without following the rotation',
+            'evidence': 'A planting calendar and shared gate log',
+            'reversal': 'The board found the manager changed the schedule after approval',
+            'ending': 'The volunteer rota was restored',
+        }
+
+        self.assertGreaterEqual(core.similarity(original, paraphrase), .48)
+        self.assertLess(core.similarity(original, same_setting_different_plot), .28)
+
     def test_seed_assignment_no_reuse(self):
         self.assertEqual(len(self.store.read()['library']), 126)
         ids = set()

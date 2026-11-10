@@ -4,6 +4,7 @@ Pure business rules only: no Tkinter, external API, or full-story storage.
 from __future__ import annotations
 import csv
 import datetime as dt
+from difflib import SequenceMatcher
 import json
 import math
 import os
@@ -189,6 +190,24 @@ his her their its who whom they them he she we our you your has have had not aft
 someone now then while since about through over under only already any no must can should every when where which
 người đã của và với trong là một để không cũng khi này kia được bởi nhưng cho còn người anh chị cô ông bà các những
 claim claimed says say said says after work working family original proof shows reveal resolution final return story drama'''.split())
+DUPLICATE_SYNONYMS = {
+    'manager': {'manager', 'supervisor', 'boss', 'director', 'administrator'},
+    'worker': {'clerk', 'assistant', 'employee', 'worker', 'staff'},
+    'record': {'record', 'document', 'file', 'ledger', 'sheet', 'paper', 'paperwork', 'log', 'register'},
+    'conceal': {'hide', 'hid', 'hidden', 'conceal', 'withhold', 'suppress'},
+    'accuse': {'blame', 'blam', 'accuse', 'accus', 'allege'},
+    'pay': {'pay', 'payroll', 'wage', 'salary', 'compensation', 'earning'},
+    'improper': {'improper', 'unauthorized', 'unapproved', 'illegal', 'unlawful', 'wrongful'},
+    'audit': {'audit', 'review', 'investigation', 'inspection', 'inquiry'},
+    'relocate': {'move', 'relocate', 'transfer'},
+    'lose': {'lose', 'lost', 'missing', 'absent'},
+    'deduct': {'deduction', 'deduct'},
+}
+DUPLICATE_CANONICAL = {
+    word: canonical
+    for canonical, words in DUPLICATE_SYNONYMS.items()
+    for word in words
+}
 BANNED_TOKENS = (
     'dugo', 'saksakin', 'tusukin', 'hiwain', 'magpaputok ng baril', 'barilin',
     'gahasain', 'butasin', 'tagusin', 'tagusan', 'lubusang tagusin',
@@ -216,26 +235,86 @@ def today():
     return dt.date.today().isoformat()
 
 
-def normalized_tokens(text):
-    text = unicodedata.normalize('NFKC', str(text)).lower()
-    words = re.findall(r'[^\W_]+', text, flags=re.UNICODE)
-    return {w for w in words if len(w) > 2 and w not in STOPWORDS}
+def _token_sequence(text):
+    normalized = unicodedata.normalize('NFKC', str(text)).lower()
+    words = re.findall(r'[^\W_]+', normalized, flags=re.UNICODE)
+    tokens = []
+    for word in words:
+        if word.endswith('ies') and len(word) > 5:
+            word = word[:-3] + 'y'
+        elif word.endswith('ing') and len(word) > 6:
+            word = word[:-3]
+            if len(word) > 2 and word[-1] == word[-2]:
+                word = word[:-1]
+        elif word.endswith('ed') and len(word) > 5:
+            word = word[:-2]
+        elif word.endswith('s') and len(word) > 4 and not word.endswith(('ss', 'us', 'is')):
+            word = word[:-1]
+        word = DUPLICATE_CANONICAL.get(word, word)
+        if len(word) > 2 and word not in STOPWORDS:
+            tokens.append(word)
+    return tokens
 
 
-def jaccard(a, b):
-    if not a or not b:
+def _text_similarity(a, b):
+    tokens_a = _token_sequence(a)
+    tokens_b = _token_sequence(b)
+    if not tokens_a or not tokens_b:
         return 0.0
-    return len(a & b) / len(a | b)
+
+    set_a, set_b = set(tokens_a), set(tokens_b)
+    overlap = set_a & set_b
+    token_jaccard = len(overlap) / len(set_a | set_b)
+    containment = len(overlap) / min(len(set_a), len(set_b))
+
+    bigrams_a = set(zip(tokens_a, tokens_a[1:]))
+    bigrams_b = set(zip(tokens_b, tokens_b[1:]))
+    bigram_dice = (
+        2 * len(bigrams_a & bigrams_b) / (len(bigrams_a) + len(bigrams_b))
+        if bigrams_a and bigrams_b else 0.0
+    )
+
+    normalized_a = ' '.join(tokens_a)
+    normalized_b = ' '.join(tokens_b)
+    chargrams_a = {
+        normalized_a[index:index + 3]
+        for index in range(max(0, len(normalized_a) - 2))
+    }
+    chargrams_b = {
+        normalized_b[index:index + 3]
+        for index in range(max(0, len(normalized_b) - 2))
+    }
+    chargram_dice = (
+        2 * len(chargrams_a & chargrams_b) / (len(chargrams_a) + len(chargrams_b))
+        if chargrams_a and chargrams_b else 0.0
+    )
+    sequence_ratio = SequenceMatcher(
+        None, normalized_a, normalized_b, autojunk=False,
+    ).ratio()
+
+    return (
+        .38 * token_jaccard
+        + .22 * containment
+        + .18 * bigram_dice
+        + .12 * chargram_dice
+        + .10 * sequence_ratio
+    )
 
 
 def similarity(a, b):
-    """Conservative lexical similarity heuristic; NOT semantic duplicate detection."""
-    fields = [('conflict', .38), ('evidence', .27), ('reversal', .30), ('title', .05)]
-    weighted = sum(jaccard(normalized_tokens(a.get(k, '')), normalized_tokens(b.get(k, ''))) * w
-                   for k, w in fields)
-    all_a = normalized_tokens(' '.join(str(a.get(k, '')) for k in ('title', 'hero', 'antagonist', 'conflict', 'evidence', 'reversal')))
-    all_b = normalized_tokens(' '.join(str(b.get(k, '')) for k in ('title', 'hero', 'antagonist', 'conflict', 'evidence', 'reversal')))
-    return round(.65 * weighted + .35 * jaccard(all_a, all_b), 3)
+    """Compare plot-bearing fields with token, phrase, and character overlap."""
+    fields = (
+        ('conflict', .34),
+        ('evidence', .24),
+        ('reversal', .24),
+        ('ending', .08),
+        ('title', .06),
+        ('hero', .02),
+        ('antagonist', .02),
+    )
+    weighted = sum(_text_similarity(a.get(key, ''), b.get(key, '')) * weight
+                   for key, weight in fields)
+    return round(weighted, 3)
 
 
 def unique_candidates(item, candidates, limit=5):

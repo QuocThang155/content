@@ -766,7 +766,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             ),
             reverse=True,
         )
-        return {'pairs': pairs[:20], 'total': len(pairs), 'method': 'lexical-jaccard'}
+        return {'pairs': pairs[:20], 'total': len(pairs), 'method': 'lexical-hybrid'}
 
     @app.post('/api/days/{date}/items/{uid}/scan')
     def scan_item(date: str, uid: str, edits: BriefEdit | None = None):
@@ -780,7 +780,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                  if x.get('uid') != uid]
         matches = core.unique_candidates(probe, peers, limit=5)
         return {'matches': [{'score': s, 'title': x.get('title'), 'slot': x.get('slot')} for s, x in matches],
-                'method': 'lexical-jaccard'}
+                'method': 'lexical-hybrid'}
 
     @app.get('/api/planning-prompt')
     def plan_prompt(date: str, ai: int = Query(..., ge=1, le=3)):

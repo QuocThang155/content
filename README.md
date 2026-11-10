@@ -211,7 +211,9 @@ Thẻ `done` không thể hoàn tác sao chép trực tiếp. Người dùng ph�
 
 - rà soát các cặp brief trong ngày;
 - so sánh một brief với các brief khác và dữ liệu những ngày đã lưu;
-- dùng độ tương đồng weighted Jaccard trên từ khóa.
+- chấm điểm theo từng trường cốt truyện (xung đột, bằng chứng, đảo chiều,
+  kết thúc, tiêu đề và vai nhân vật), kết hợp giao từ khóa, cụm từ liền kề,
+  độ bao hàm, chuỗi ký tự gần nhau và chuẩn hóa một số dạng từ/đồng nghĩa.
 
 Kết quả chỉ là cảnh báo heuristic, không phải kiểm tra ngữ nghĩa, đạo văn hay
 bản quyền.

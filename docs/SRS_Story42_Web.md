@@ -23,7 +23,7 @@
 - **FR-04:** Full, Part 1, Part 2 prompt text is rendered on backend only from user-saved templates.
 - **FR-05:** `ready`, `sent`, `part1`, `done`, toggling completion and autosaving are preserved. Frontend posts copy status after successful clipboard access, not before.
 - **FR-06:** Edit seven brief fields with a minimum length; IDs, themes, slots and AI cannot be edited.
-- **FR-07:** weighted Jaccard same as desktop; scan day and compare individual brief with archived days; warning is explicitly lexical-only.
+- **FR-07:** field-weighted lexical hybrid similarity (token overlap, containment, phrase order, character n-grams, and normalized word forms); scan day and compare individual brief with archived days; warning remains heuristic, not semantic plagiarism detection.
 - **FR-08/09:** planning prompt, strict 14-line parser, seed-independent `CUSTOM-` IDs, single-AI lane replacement, and warning/confirmation before replacing ready-only lane or accepting similar briefs.
 - **FR-10:** daily history, JSON download/restore, UTF-8-BOM CSV, local persistent database.
 - **FR-11:** no full story body ingestion or storage.
